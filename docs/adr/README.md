@@ -16,3 +16,4 @@ Copy [`0000-template.md`](0000-template.md) to start a new one.
 | [0004](0004-draw-device-frames-from-png-bezels.md) | Draw device frames from PNG bezels | accepted |
 | [0005](0005-render-with-wgpu-in-a-transparent-window.md) | Render with wgpu in a transparent window | accepted |
 | [0006](0006-decode-h264-in-software-with-openh264.md) | Decode H.264 in software with openh264 | accepted |
+| [0007](0007-capture-raw-pcm-audio-and-play-it-with-cpal.md) | Capture raw PCM audio and play it with cpal | accepted |

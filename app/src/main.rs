@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 mod adb;
+mod audio;
 mod control;
 mod frame;
 mod overlay;
