@@ -23,3 +23,4 @@ Copy [`0000-template.md`](0000-template.md) to start a new one.
 | [0011](0011-use-a-scrcpy-derived-icon.md) | Use an icon derived from scrcpy's | accepted |
 | [0012](0012-release-with-changesets.md) | Release with Changesets | accepted |
 | [0013](0013-sign-and-notarise-releases.md) | Sign with Developer ID and notarise releases | accepted |
+| [0014](0014-show-a-connect-screen-in-the-frame.md) | Show a connect screen inside the frame | accepted |

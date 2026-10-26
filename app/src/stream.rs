@@ -17,6 +17,8 @@ pub enum UserEvent {
     Failed(String),
     /// A native menu item was chosen.
     Menu(String),
+    /// The latest `adb devices`, or why it could not be run.
+    Adb(Result<Vec<(String, String)>, String>),
 }
 
 #[derive(Default)]

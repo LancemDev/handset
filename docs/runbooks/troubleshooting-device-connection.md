@@ -2,6 +2,11 @@
 
 Use this when Handset does not show the phone, or shows a black or frozen window.
 
+With no phone ready, Handset opens on a connect screen drawn in the frame. Its status line says what adb sees
+(looking for a phone, allow this Mac on the phone, the phone is offline, no access, adb is missing) and what to
+do, and it starts mirroring on its own once the phone is ready. The table below is the same advice in more
+detail.
+
 ## 1. Is adb seeing the phone?
 
 ```sh

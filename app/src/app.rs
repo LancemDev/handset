@@ -1,12 +1,16 @@
 //! Window, input handling and the glue between stream, renderer and control.
 
+use crate::adb;
 use crate::audio;
 use crate::capture::{self, Recorder};
+use crate::connect::{self, Status};
 use crate::control::{Control, Touch, keycode};
 use crate::frame::{self, Bezel};
 use crate::menu;
+use crate::mirror::Mirror;
 use crate::overlay;
 use crate::render::Renderer;
+use crate::server;
 use crate::stream::{Slot, UserEvent};
 use crate::toolbar::{self, Button};
 use std::sync::{Arc, Mutex};
@@ -14,7 +18,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -28,7 +32,39 @@ pub struct Init {
     pub audio_sink: audio::RecSink,
     pub with_audio: bool,
     pub frame_spec: Option<String>,
+    /// The running session, or `None` to open on the connect screen and wait for a phone.
+    pub mirror: Option<Mirror>,
+    pub wait: Option<Wait>,
+    pub proxy: EventLoopProxy<UserEvent>,
+    pub opts: server::Options,
+    pub mute: bool,
 }
+
+/// What the connect screen is waiting for.
+pub struct Wait {
+    /// A specific phone, when one was named on the command line.
+    pub serial: Option<String>,
+    /// Switch the phone to Wi-Fi once it is found (`--wifi` with nothing plugged in yet).
+    pub wifi: bool,
+}
+
+/// The connect screen's state while waiting.
+struct Waiting {
+    want: Option<String>,
+    wifi: bool,
+    status: Status,
+    tick: u32,
+    tick_at: Instant,
+    /// A phone is ready: start mirroring it at this time (after the "connecting" screen has been seen).
+    starting: Option<(String, Instant)>,
+    /// A phone that failed to start, and when: not retried for a while.
+    failed: Option<(String, Instant)>,
+}
+
+/// How long to leave a phone alone after mirroring it failed.
+const RETRY_AFTER: Duration = Duration::from_secs(10);
+/// Height of the connect screen's picture; the width follows the screen's aspect.
+const CONNECT_HEIGHT: u32 = 1560;
 
 pub struct App {
     pub bezel: Option<Bezel>,
@@ -58,6 +94,11 @@ pub struct App {
     /// What the renderer's overlay currently shows (text, dot colour).
     overlay_key: Option<(String, Option<[u8; 3]>)>,
     overlay_opacity: f32,
+    mirror: Option<Mirror>,
+    waiting: Option<Waiting>,
+    proxy: EventLoopProxy<UserEvent>,
+    opts: server::Options,
+    mute: bool,
 }
 
 /// A short message pill. With a `path` it is clickable and reveals that file.
@@ -108,6 +149,126 @@ impl App {
             toast: None,
             overlay_key: None,
             overlay_opacity: 1.0,
+            mirror: init.mirror,
+            waiting: init.wait.map(|w| Waiting {
+                want: w.serial,
+                wifi: w.wifi,
+                status: Status::Looking,
+                tick: 0,
+                tick_at: Instant::now(),
+                starting: None,
+                failed: None,
+            }),
+            proxy: init.proxy,
+            opts: init.opts,
+            mute: init.mute,
+        }
+    }
+
+    /// Draw the connect screen into the phone's screen area.
+    fn draw_connect(&mut self) {
+        let (Some(wt), Some(r), Some(w)) = (self.waiting.as_ref(), self.renderer.as_mut(), self.window.as_ref()) else {
+            return;
+        };
+        let aspect = r.content_aspect().unwrap_or(9.0 / 20.0);
+        let (pw, ph) = (((CONNECT_HEIGHT as f32 * aspect).round() as u32) & !1, CONNECT_HEIGHT);
+        let rgb = connect::render(pw, ph, &wt.status, wt.tick);
+        r.upload(&connect::to_yuv(&rgb, pw, ph));
+        w.request_redraw();
+    }
+
+    /// New `adb devices` result while waiting: update what the screen says, or start mirroring.
+    fn on_adb(&mut self, result: Result<Vec<(String, String)>, String>) {
+        let Some(wt) = self.waiting.as_mut() else { return };
+        if wt.starting.is_some() {
+            return;
+        }
+        let next = match result {
+            Err(_) => Status::AdbMissing,
+            Ok(list) => match connect::pick(&list, wt.want.as_deref()) {
+                Some(serial) => {
+                    let recently_failed =
+                        wt.failed.as_ref().is_some_and(|(s, at)| *s == serial && at.elapsed() < RETRY_AFTER);
+                    if recently_failed {
+                        return;
+                    }
+                    wt.starting = Some((serial.clone(), Instant::now() + Duration::from_millis(300)));
+                    Status::Connecting(serial)
+                }
+                None => {
+                    wt.failed = None; // the phone went away; a replug gets a fresh try
+                    connect::status_from(&list, wt.want.as_deref())
+                }
+            },
+        };
+        if next != wt.status {
+            wt.status = next;
+            self.draw_connect();
+        }
+    }
+
+    /// Animate the connect screen and start mirroring once its "connecting" frame has been shown.
+    /// Returns when this wants to run again.
+    fn tick_connect(&mut self) -> Option<Instant> {
+        let now = Instant::now();
+        let wt = self.waiting.as_mut()?;
+        let mut redraw = false;
+        if now.duration_since(wt.tick_at) >= Duration::from_millis(500) {
+            wt.tick += 1;
+            wt.tick_at = now;
+            redraw = true;
+        }
+        let start = wt.starting.as_ref().filter(|(_, at)| now >= *at).map(|(s, _)| s.clone());
+        let next = wt.tick_at + Duration::from_millis(500);
+        if redraw {
+            self.draw_connect();
+        }
+        if let Some(serial) = start {
+            self.begin_mirroring(serial);
+        }
+        self.waiting.as_ref().map(|_| next)
+    }
+
+    fn begin_mirroring(&mut self, usb_serial: String) {
+        let Some(wt) = self.waiting.as_mut() else { return };
+        wt.starting = None;
+        let mut serial = usb_serial.clone();
+        if wt.wifi {
+            match adb::wifi(&usb_serial) {
+                Ok(s) => {
+                    eprintln!("on Wi-Fi as {s}: you can unplug the cable");
+                    serial = s;
+                }
+                Err(e) => eprintln!("could not switch to Wi-Fi ({e}); mirroring over USB"),
+            }
+        }
+        match Mirror::start(
+            &serial,
+            &self.opts,
+            self.mute,
+            self.proxy.clone(),
+            self.slot.clone(),
+            self.audio_sink.clone(),
+        ) {
+            Ok((mirror, control)) => {
+                self.with_audio = mirror.with_audio();
+                self.control = control;
+                if let Some(w) = &self.window {
+                    w.set_title(&mirror.session.device_name);
+                }
+                self.title = mirror.session.device_name.clone();
+                self.mirror = Some(mirror);
+                self.waiting = None;
+                connect::stop_poll();
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                if let Some(wt) = self.waiting.as_mut() {
+                    wt.failed = Some((usb_serial, Instant::now()));
+                    wt.status = Status::Failed(e);
+                }
+                self.draw_connect();
+            }
         }
     }
 
@@ -455,6 +616,9 @@ impl ApplicationHandler<UserEvent> for App {
             b.rgba = Vec::new();
         }
         self.window = Some(window);
+        if self.waiting.is_some() {
+            self.draw_connect();
+        }
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
@@ -465,14 +629,15 @@ impl ApplicationHandler<UserEvent> for App {
             el.exit();
             return;
         }
+        let connect_wake = self.tick_connect();
         self.refresh_toolbar();
         let animating = self.refresh_overlay();
         let Some(rec) = &self.recorder else {
-            el.set_control_flow(if animating {
-                ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(33))
-            } else {
-                ControlFlow::Wait
-            });
+            let mut next = animating.then(|| Instant::now() + Duration::from_millis(33));
+            if let Some(t) = connect_wake {
+                next = Some(next.map_or(t, |n| n.min(t)));
+            }
+            el.set_control_flow(next.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
             return;
         };
         let period = Duration::from_micros(1_000_000 / self.cap.fps.max(1) as u64);
@@ -506,6 +671,7 @@ impl ApplicationHandler<UserEvent> for App {
                 el.exit();
             }
             UserEvent::Menu(id) => self.on_menu(el, &id),
+            UserEvent::Adb(result) => self.on_adb(result),
             UserEvent::Frame => {
                 let (Some(r), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) else { return };
                 let mut s = self.slot.lock().unwrap();

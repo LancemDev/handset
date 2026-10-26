@@ -99,6 +99,10 @@ instead: `cargo install --path app --locked`.
 | `--wifi` | Switch a USB-connected phone to Wi-Fi, connect, and mirror (you can unplug the cable) |
 | `[serial]` | Pick a device when several are connected |
 
+With no phone plugged in, Handset opens on a "connect a phone" screen inside the frame. It watches adb,
+says what it sees (nothing yet, a phone waiting for you to tap Allow, an offline connection) and starts
+mirroring by itself as soon as a phone is ready.
+
 Over Wi-Fi: on Android 11 or later, open Developer options > Wireless debugging > Pair device with pairing
 code, run `handset --pair <ip:port> <code>` with what it shows, then `handset --connect <ip:port>` with the
 address on the main Wireless debugging screen. On any version, `handset --wifi` does it from a USB

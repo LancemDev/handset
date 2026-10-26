@@ -2,9 +2,11 @@ mod adb;
 mod app;
 mod audio;
 mod capture;
+mod connect;
 mod control;
 mod frame;
 mod menu;
+mod mirror;
 mod overlay;
 mod render;
 mod server;
@@ -12,7 +14,6 @@ mod stream;
 mod toolbar;
 mod tools;
 
-use std::io::Read;
 use std::sync::{Arc, Mutex};
 use winit::event_loop::EventLoop;
 
@@ -82,64 +83,63 @@ fn main() {
         .as_deref()
         .map(|s| frame::load(s).unwrap_or_else(|e| tools::die(&format!("Cannot load the frame: {e}"))));
 
-    let serial = if let Some(addr) = &connect {
-        adb::connect(addr).unwrap_or_else(|e| tools::die(&e.to_string()))
-    } else {
-        let usb = serial.unwrap_or_else(|| {
-            adb::devices()
-                .ok()
-                .and_then(|d| d.into_iter().next())
-                .unwrap_or_else(|| tools::die(&adb::no_device_message(&adb::list().unwrap_or_default())))
-        });
-        if wifi {
-            let s = adb::wifi(&usb).unwrap_or_else(|e| tools::die(&e.to_string()));
-            eprintln!("on Wi-Fi as {s}: you can unplug the cable");
-            s
-        } else {
-            usb
-        }
-    };
-
-    let session =
-        server::start(&serial, &opts).unwrap_or_else(|e| tools::die(&format!("Could not start mirroring: {e}")));
-    eprintln!("connected: {}", session.device_name);
-
     let event_loop = EventLoop::<stream::UserEvent>::with_user_event().build().unwrap();
     menu::install(event_loop.create_proxy());
     let slot = Arc::new(Mutex::new(stream::Slot::default()));
-    stream::spawn(session.video.try_clone().unwrap(), slot.clone(), event_loop.create_proxy());
-
-    // The server also writes device messages (clipboard...) on the control
-    // socket: drain them so it never blocks.
-    let mut drain = session.control.try_clone().unwrap();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        while drain.read(&mut buf).map(|n| n > 0).unwrap_or(false) {}
-    });
-
-    // Audio: play it here (unless --mute) and give recordings a copy. The
-    // playback stream is not `Send`, so it lives on this thread until exit.
     let audio_sink: audio::RecSink = Arc::new(Mutex::new(None));
-    let playback = (session.audio.is_some() && !mute)
-        .then(|| audio::Playback::new().map_err(|e| eprintln!("no local playback: {e}")).ok())
-        .flatten();
-    if let Some(a) = &session.audio {
-        audio::spawn(a.try_clone().unwrap(), playback.as_ref().map(|p| p.ring()), audio_sink.clone());
-    }
 
-    let control = control::Control::new(session.control.try_clone().unwrap());
+    // Which phone: `--connect` makes its own; otherwise one that is ready now (the one asked for, or the
+    // first). With none, the window opens on the connect screen and waits for a phone.
+    let ready: Option<String> = if let Some(addr) = &connect {
+        Some(adb::connect(addr).unwrap_or_else(|e| tools::die(&e.to_string())))
+    } else {
+        adb::devices().ok().and_then(|d| match &serial {
+            Some(want) => d.into_iter().find(|s| s == want),
+            None => d.into_iter().next(),
+        })
+    };
+
+    let mut wifi_pending = wifi && connect.is_none();
+    let mut mirror = None;
+    let mut control = control::Control::disconnected();
+    let mut title = "Handset".to_string();
+    let mut with_audio = false;
+    if let Some(mut serial) = ready {
+        if std::mem::take(&mut wifi_pending) {
+            serial = adb::wifi(&serial).unwrap_or_else(|e| tools::die(&e.to_string()));
+            eprintln!("on Wi-Fi as {serial}: you can unplug the cable");
+        }
+        let (m, c) =
+            mirror::Mirror::start(&serial, &opts, mute, event_loop.create_proxy(), slot.clone(), audio_sink.clone())
+                .unwrap_or_else(|e| tools::die(&e));
+        title = m.session.device_name.clone();
+        with_audio = m.with_audio();
+        control = c;
+        mirror = Some(m);
+    }
+    let waiting = mirror.is_none();
+
     let mut app = app::App::new(app::Init {
         bezel,
-        title: session.device_name.clone(),
+        title,
         slot,
         control,
         cap,
         audio_sink,
-        with_audio: session.audio.is_some(),
+        with_audio,
         frame_spec,
+        mirror,
+        wait: waiting.then(|| app::Wait { serial: serial.clone(), wifi: wifi_pending }),
+        proxy: event_loop.create_proxy(),
+        opts,
+        mute,
     });
     app.auto_record = record_for.map(std::time::Duration::from_secs_f32);
+    if waiting {
+        connect::spawn_poll(event_loop.create_proxy());
+    }
     event_loop.run_app(&mut app).unwrap();
-    drop(playback);
-    // `session` drops here: kills the server process and removes the adb forward.
+    connect::stop_poll();
+    // `app` drops here, and with it the mirroring session: that kills the server process and removes
+    // the adb forward.
 }

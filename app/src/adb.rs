@@ -47,27 +47,6 @@ fn parse_devices(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Why no device could be used, in words for the person at the keyboard.
-pub fn no_device_message(listed: &[(String, String)]) -> String {
-    let help = "Connect your phone over USB, turn on USB debugging and accept the prompt on the phone, \
-                or connect over Wi-Fi with `handset --connect <ip:port>`.";
-    if let Some((serial, _)) = listed.iter().find(|(_, s)| s == "unauthorized") {
-        return format!(
-            "The phone ({serial}) has not authorised this Mac.\n\nUnlock it and tap Allow on the \"Allow USB debugging?\" prompt. If there is no prompt, unplug the cable, \
-             turn USB debugging off and on in Developer options, and plug it in again."
-        );
-    }
-    if let Some((serial, _)) = listed.iter().find(|(_, s)| s == "offline") {
-        return format!(
-            "The phone ({serial}) is listed as offline.\n\nUnplug and replug the cable, or run `adb kill-server` and try again."
-        );
-    }
-    if let Some((serial, _)) = listed.iter().find(|(_, s)| s.contains("permissions")) {
-        return format!("This Mac cannot access the phone ({serial}): adb reports a permissions problem.\n\n{help}");
-    }
-    format!("No Android device found.\n\n{help} Handset needs adb (Android platform-tools) installed.")
-}
-
 /// `host` or `host:port` as `host:port`, with adb's default port when none is given.
 pub fn normalize_addr(addr: &str) -> String {
     if addr.contains(':') { addr.to_string() } else { format!("{addr}:5555") }
@@ -213,16 +192,6 @@ mod tests {
             ]
         );
         assert!(parse_devices("List of devices attached\n\n").is_empty());
-    }
-
-    #[test]
-    fn explains_each_failure() {
-        let unauthorized = no_device_message(&[("R58M".into(), "unauthorized".into())]);
-        assert!(unauthorized.contains("Allow"), "{unauthorized}");
-        let offline = no_device_message(&[("R58M".into(), "offline".into())]);
-        assert!(offline.contains("offline"), "{offline}");
-        let none = no_device_message(&[]);
-        assert!(none.contains("--connect"), "{none}");
     }
 
     #[test]

@@ -31,16 +31,23 @@ pub mod keycode {
 }
 
 pub struct Control {
-    stream: TcpStream,
+    /// `None` until a phone is connected: messages are dropped meanwhile.
+    stream: Option<TcpStream>,
 }
 
 impl Control {
     pub fn new(stream: TcpStream) -> Self {
-        Self { stream }
+        Self { stream: Some(stream) }
+    }
+
+    /// A control that is not connected to a phone yet.
+    pub fn disconnected() -> Self {
+        Self { stream: None }
     }
 
     fn send(&mut self, msg: &[u8]) -> io::Result<()> {
-        let r = self.stream.write_all(msg);
+        let Some(stream) = self.stream.as_mut() else { return Ok(()) };
+        let r = stream.write_all(msg);
         if let Err(e) = &r {
             eprintln!("control write failed: {e}");
         }
