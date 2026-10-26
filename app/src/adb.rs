@@ -73,11 +73,38 @@ pub fn normalize_addr(addr: &str) -> String {
     if addr.contains(':') { addr.to_string() } else { format!("{addr}:5555") }
 }
 
+/// Run `cmd` and collect its output, giving up (and killing it) after `limit`. adb's own connect
+/// timeout is over a minute, which looks like a hang.
+fn output_within(mut cmd: Command, limit: std::time::Duration) -> io::Result<std::process::Output> {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output();
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "no answer in time"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+}
+
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// `adb connect`: returns the serial to use afterwards.
 pub fn connect(addr: &str) -> io::Result<String> {
     let addr = normalize_addr(addr);
-    let out = Command::new(adb_path()).args(["connect", &addr]).stdin(Stdio::null()).output()?;
-    parse_connect(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr), &addr)
+    let mut cmd = Command::new(adb_path());
+    cmd.args(["connect", &addr]);
+    match output_within(cmd, CONNECT_TIMEOUT) {
+        Ok(out) => parse_connect(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr), &addr),
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+            parse_connect("", &format!("no answer from {addr} after {} seconds", CONNECT_TIMEOUT.as_secs()), &addr)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn parse_connect(stdout: &str, stderr: &str, addr: &str) -> io::Result<String> {
@@ -98,7 +125,15 @@ fn parse_connect(stdout: &str, stderr: &str, addr: &str) -> io::Result<String> {
 
 /// `adb pair host:port code`, as shown under Developer options > Wireless debugging > Pair device.
 pub fn pair(addr: &str, code: &str) -> io::Result<String> {
-    let out = Command::new(adb_path()).args(["pair", addr, code]).stdin(Stdio::null()).output()?;
+    let mut cmd = Command::new(adb_path());
+    cmd.args(["pair", addr, code]);
+    let out = output_within(cmd, std::time::Duration::from_secs(20)).map_err(|e| {
+        if e.kind() == io::ErrorKind::TimedOut {
+            io::Error::other(format!("Pairing with {addr} timed out: no answer after 20 seconds. Check the address and that the pairing screen is still open."))
+        } else {
+            e
+        }
+    })?;
     let text =
         format!("{} {}", String::from_utf8_lossy(&out.stdout).trim(), String::from_utf8_lossy(&out.stderr).trim());
     if text.to_lowercase().contains("successfully paired") {
@@ -188,6 +223,21 @@ mod tests {
         assert!(offline.contains("offline"), "{offline}");
         let none = no_device_message(&[]);
         assert!(none.contains("--connect"), "{none}");
+    }
+
+    #[test]
+    fn gives_up_on_a_slow_command() {
+        let mut slow = Command::new("sleep");
+        slow.arg("5");
+        let started = std::time::Instant::now();
+        let err = output_within(slow, std::time::Duration::from_millis(200)).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        let mut fast = Command::new("echo");
+        fast.arg("hi");
+        let out = output_within(fast, std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
     }
 
     #[test]
