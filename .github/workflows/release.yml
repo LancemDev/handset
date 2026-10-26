@@ -1,0 +1,42 @@
+name: release
+
+# Keeps a "Version packages" pull request up to date from the changesets on main. Merging that pull
+# request bumps the version and CHANGELOG.md; the next run of this workflow tags the release (v0.1.0)
+# and creates the GitHub release. See docs/runbooks/release.md.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: version or tag
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - id: changesets
+        uses: changesets/action@v1
+        with:
+          version: npm run version
+          publish: npm run tag
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

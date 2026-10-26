@@ -24,7 +24,8 @@ small native Rust app that implements the desktop side of the scrcpy protocol an
 | `app/assets/` | Embedded scrcpy server and the built-in phone frames |
 | `frames/` | Script that generates the frame PNGs |
 | `app/packaging/` | App icon: SVG sources, `AppIcon.icns` and a README PNG (rebuild with `scripts/make-icon.sh`) |
-| `scripts/` | Packaging, icon and hook scripts |
+| `scripts/` | Packaging, icon, version-sync and hook scripts |
+| `.changeset/`, `package.json` | Changesets config and the version it bumps (release tooling only, see `docs/runbooks/release.md`) |
 | `docs/adr/`, `docs/runbooks/` | Architecture decisions and repeatable procedures |
 
 ## Commands
@@ -38,6 +39,7 @@ cargo test
 cargo test -- --ignored clipboard  # changes the real clipboard, run on purpose only
 ../scripts/package-macos.sh        # builds dist/Handset.app
 ../scripts/install-hooks.sh        # enable the commit message hook
+npm run changeset                  # (repo root) add a changeset for a user-visible change
 ```
 
 ## Conventions

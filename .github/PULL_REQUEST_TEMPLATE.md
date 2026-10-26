@@ -19,5 +19,6 @@
 
 - [ ] The title follows Conventional Commits (`type(scope): subject`)
 - [ ] I added or updated an ADR if this changes an architectural decision
-- [ ] I updated the README, runbooks or changelog if behaviour changed
+- [ ] I added a changeset (`npm run changeset`) if a user would notice this change, or it does not need one
+- [ ] I updated the README or runbooks if behaviour changed
 - [ ] No build output, local checkouts or personal captures are included

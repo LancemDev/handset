@@ -32,6 +32,10 @@ cargo test
 Run the app against a real phone if you touched anything in the video, input, audio or capture paths,
 and say so in the pull request.
 
+If the change is something a user would notice (a feature, a fix, a changed option), add a changeset:
+`npm install` once, then `npm run changeset`, and commit the file it writes. Docs, tests, CI and
+refactors do not need one. See [the release runbook](docs/runbooks/release.md).
+
 ## Commit messages and pull request titles
 
 We use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): subject`.

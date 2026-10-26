@@ -12,3 +12,6 @@
 .idea/
 .vscode/
 *.swp
+
+# release tooling
+node_modules/
