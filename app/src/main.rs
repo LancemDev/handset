@@ -5,6 +5,7 @@
 
 mod adb;
 mod control;
+mod frame;
 mod server;
 mod tools;
 

@@ -1,0 +1,146 @@
+//! Phone bezel: an RGBA PNG with a transparent screen area, plus the screen
+//! rectangle ("x y w h" in image pixels).
+
+use std::io::Cursor;
+
+pub struct Bezel {
+    pub width: u32,
+    pub height: u32,
+    /// Straight-alpha RGBA8, only kept until uploaded to the GPU.
+    pub rgba: Vec<u8>,
+    /// Screen area as fractions of the image: x, y, w, h.
+    pub hole: [f32; 4],
+    /// Alpha at 1/4 resolution, for hit-testing without keeping the full image.
+    alpha_small: Vec<u8>,
+    small_w: u32,
+}
+
+const BUILTIN: &[(&str, &[u8], &str)] = &[
+    ("obsidian", include_bytes!("../assets/frame-obsidian.png"), include_str!("../assets/frame-obsidian.frame")),
+    ("porcelain", include_bytes!("../assets/frame-porcelain.png"), include_str!("../assets/frame-porcelain.frame")),
+    ("hazel", include_bytes!("../assets/frame-hazel.png"), include_str!("../assets/frame-hazel.frame")),
+];
+
+pub fn builtin_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN.iter().map(|b| b.0)
+}
+
+/// `spec` is a built-in name or a path to a PNG with a `.frame` sidecar.
+pub fn load(spec: &str) -> Result<Bezel, String> {
+    if let Some((_, png, meta)) = BUILTIN.iter().find(|b| b.0 == spec) {
+        return decode(png, meta);
+    }
+    let png = std::fs::read(spec).map_err(|e| format!("{spec}: {e}"))?;
+    let meta_path = std::path::Path::new(spec).with_extension("frame");
+    let meta = std::fs::read_to_string(&meta_path).map_err(|e| format!("{}: {e}", meta_path.display()))?;
+    decode(&png, &meta)
+}
+
+/// The bezel texture never needs to be taller than this: it is what a
+/// full-height window shows on a 2x display. Larger images are box-filtered
+/// down while decoding, which keeps both the decode buffer and the GPU
+/// texture small.
+const MAX_HEIGHT: u32 = 1800;
+
+fn decode(png: &[u8], meta: &str) -> Result<Bezel, String> {
+    let n: Vec<f32> = meta.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    if n.len() != 4 || n[2] <= 0.0 || n[3] <= 0.0 {
+        return Err("invalid .frame metadata, expected \"x y w h\"".into());
+    }
+
+    let mut reader = png::Decoder::new(Cursor::new(png)).read_info().map_err(|e| e.to_string())?;
+    let (color, depth) = reader.output_color_type();
+    if color != png::ColorType::Rgba || depth != png::BitDepth::Eight {
+        return Err("frame image must be 8-bit RGBA".into());
+    }
+    let (w, h) = (reader.info().width, reader.info().height);
+    if n[0] + n[2] > w as f32 || n[1] + n[3] > h as f32 {
+        return Err("screen area is outside of the frame image".into());
+    }
+
+    let scale = (MAX_HEIGHT as f32 / h as f32).min(1.0);
+    let tw = ((w as f32 * scale).round() as u32).max(1);
+    let th = ((h as f32 * scale).round() as u32).max(1);
+
+    // Source column range of every target column.
+    let cols: Vec<(usize, usize)> = (0..tw as usize)
+        .map(|x| {
+            let a = x * w as usize / tw as usize;
+            (a, ((x + 1) * w as usize / tw as usize).max(a + 1).min(w as usize))
+        })
+        .collect();
+
+    let mut out = Vec::with_capacity((tw * th * 4) as usize);
+    // per target column: sum of rgb*alpha, sum of alpha (alpha-weighted so
+    // transparent pixels do not darken the edges)
+    let mut acc = vec![[0f32; 4]; tw as usize];
+    let mut rows_in_bucket = 0f32;
+    let mut bucket = 0u32;
+
+    let emit = |acc: &mut Vec<[f32; 4]>, rows: f32, out: &mut Vec<u8>| {
+        for (x, a) in acc.iter_mut().enumerate() {
+            let count = rows * (cols[x].1 - cols[x].0) as f32;
+            let alpha = a[3];
+            let (r, g, b) = if alpha > 0.0 { (a[0] / alpha, a[1] / alpha, a[2] / alpha) } else { (0.0, 0.0, 0.0) };
+            out.extend_from_slice(&[r as u8, g as u8, b as u8, (alpha / count * 255.0).round() as u8]);
+            *a = [0.0; 4];
+        }
+    };
+
+    for sy in 0..h {
+        let row = reader.next_row().map_err(|e| e.to_string())?.ok_or("truncated frame image")?;
+        let ty = (sy as u64 * th as u64 / h as u64) as u32;
+        if ty != bucket {
+            emit(&mut acc, rows_in_bucket, &mut out);
+            rows_in_bucket = 0.0;
+            bucket = ty;
+        }
+        rows_in_bucket += 1.0;
+        let data = row.data();
+        for (x, &(a, b)) in cols.iter().enumerate() {
+            for px in data[a * 4..b * 4].chunks_exact(4) {
+                let al = px[3] as f32 / 255.0;
+                acc[x][0] += px[0] as f32 * al;
+                acc[x][1] += px[1] as f32 * al;
+                acc[x][2] += px[2] as f32 * al;
+                acc[x][3] += al;
+            }
+        }
+    }
+    emit(&mut acc, rows_in_bucket, &mut out);
+    debug_assert_eq!(out.len(), (tw * th * 4) as usize);
+
+    let (sw, sh) = (tw / 4, th / 4);
+    let mut alpha_small = Vec::with_capacity((sw * sh) as usize);
+    for y in 0..sh {
+        for x in 0..sw {
+            alpha_small.push(out[(((y * 4) * tw + x * 4) * 4 + 3) as usize]);
+        }
+    }
+
+    Ok(Bezel {
+        width: tw,
+        height: th,
+        rgba: out,
+        hole: [n[0] / w as f32, n[1] / h as f32, n[2] / w as f32, n[3] / h as f32],
+        alpha_small,
+        small_w: sw,
+    })
+}
+
+impl Bezel {
+    pub fn aspect(&self) -> f32 {
+        self.width as f32 / self.height as f32
+    }
+
+    /// Is this point (fractions of the bezel image) on an opaque pixel?
+    pub fn opaque_at(&self, fx: f32, fy: f32) -> bool {
+        if !(0.0..1.0).contains(&fx) || !(0.0..1.0).contains(&fy) {
+            return false;
+        }
+        let sh = self.alpha_small.len() as u32 / self.small_w;
+        let x = (fx * self.small_w as f32) as u32;
+        let y = (fy * sh as f32) as u32;
+        self.alpha_small[(y * self.small_w + x) as usize] >= 128
+    }
+}
