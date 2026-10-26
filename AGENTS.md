@@ -1,0 +1,80 @@
+# AGENTS.md
+
+Guidance for coding agents (and humans) working in this repository.
+
+## What this is
+
+Handset mirrors and controls an Android phone from a Mac, inside a realistic phone frame. It is a
+small native Rust app that implements the desktop side of the scrcpy protocol and embeds the
+**unmodified** scrcpy server. macOS is the only tested platform.
+
+## Layout
+
+| Path | What lives there |
+|---|---|
+| `app/` | The Rust crate (binary `handset`) |
+| `app/src/adb.rs`, `server.rs` | Run adb, push and start the server, read its sockets |
+| `app/src/stream.rs` | Video thread: read packets, decode H.264, publish the latest frame |
+| `app/src/render.rs`, `shader.wgsl` | wgpu renderer: YUV to RGB on the GPU, bezel, overlays, offscreen capture |
+| `app/src/app.rs` | winit window, input, toolbar, toast, menu events, recording timer |
+| `app/src/control.rs` | Control messages sent to the phone (touch, scroll, keys, text, rotate) |
+| `app/src/frame.rs`, `overlay.rs`, `toolbar.rs` | Bezel loading, bitmap-font pills, toolbar icons |
+| `app/src/audio.rs`, `capture.rs` | Raw PCM audio and playback; screenshots and ffmpeg recording |
+| `app/src/menu.rs`, `tools.rs` | Native macOS menu; tool lookup, error dialogs, default arguments |
+| `app/assets/` | Embedded scrcpy server and the built-in phone frames |
+| `frames/` | Scripts that generate the frame PNGs and the app icon |
+| `scripts/` | Packaging and hook scripts |
+| `docs/adr/`, `docs/runbooks/` | Architecture decisions and repeatable procedures |
+
+## Commands
+
+```sh
+cd app
+cargo run --release -- --audio     # run against a connected phone
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo test -- --ignored clipboard  # changes the real clipboard, run on purpose only
+../scripts/package-macos.sh        # builds dist/Handset.app
+../scripts/install-hooks.sh        # enable the commit message hook
+```
+
+## Conventions
+
+- Commits and PR titles use Conventional Commits. Scopes are in `.commit-scopes`.
+- Do not add attribution lines to commit messages or pull request descriptions.
+- Rust 2024 edition, `rustfmt.toml` in `app/`, clippy clean with `-D warnings`.
+- Comments explain why, not what. Keep them as sparse as the surrounding code.
+- macOS-only code is behind `cfg(target_os = "macos")` and must not break other targets.
+- Do not commit build output, the local `scrcpy/` checkout, `frames/out/` or personal captures.
+- Record architectural decisions as ADRs (see `docs/adr/README.md`) in the same change.
+
+## Testing and safety
+
+- Most behaviour needs a real phone. Check `adb devices` first.
+- Do not send synthetic mouse or keyboard events to the developer's machine, or take full-screen
+  screenshots of it, without asking. Capture only the app window (`screencapture -l <window id>`).
+- Anything that changes the phone (rotation, volume, settings, launched apps) must be restored
+  afterwards. Use `--mute` when testing audio so the Mac stays quiet.
+- Delete test captures from `~/Pictures/handset` and `~/Movies/handset` when you are done, and do not
+  overwrite the user's clipboard without saying so.
+- When writing files from a shell, quote heredocs (`<<'EOF'`) so backticks and `$` in Markdown are
+  never executed.
+
+## Architecture in one paragraph
+
+adb forwards a local port to the server on the phone. `server.rs` opens the video, optional audio and
+control sockets in that order. A video thread decodes H.264 with openh264 and writes the newest
+frame into a shared slot, waking the UI thread through an event-loop proxy. The UI thread uploads the
+planes to wgpu, draws video then bezel, and writes control messages straight to the control socket.
+The toolbar, toast and REC pill are drawn only in the window pass, so screenshots and recordings,
+which render offscreen through `Renderer::capture`, never contain them.
+
+## Gotchas
+
+- `SERVER_VERSION` in `server.rs` must equal the embedded server's version exactly.
+- A Finder-launched app has a bare `PATH`; always locate `adb` and `ffmpeg` through `tools::find`.
+- The window is transparent and borderless when a frame is active; hit-testing uses a quarter-
+  resolution alpha mask of the bezel.
+- Frame metadata is a sidecar `<name>.frame` file holding `x y w h` of the screen area in pixels.
+- wgpu 30 differs from older tutorials (for example `queue.present(frame)`); read the crate source.
