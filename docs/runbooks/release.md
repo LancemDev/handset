@@ -77,6 +77,18 @@ them and falls back to an ad-hoc build when they are missing:
 | `NOTARY_KEY_ID` | That key's ID |
 | `NOTARY_ISSUER` | The issuer ID shown on the App Store Connect keys page |
 
+### Homebrew cask
+
+After the binaries are attached, the `homebrew` job bumps `version` and `sha256` in `Casks/handset.rb` of
+[`davidamunga/homebrew-tap`](https://github.com/davidamunga/homebrew-tap) and pushes the change, so
+`brew upgrade --cask handset` sees the new release. It needs one more repository secret:
+
+| Secret | Content |
+|---|---|
+| `TAP_GITHUB_TOKEN` | A fine-grained personal access token with **Contents: Read and write** on the `homebrew-tap` repository only (GitHub > Settings > Developer settings > Fine-grained tokens). The default `GITHUB_TOKEN` cannot write to another repository. |
+
+Without the secret the job prints a notice and does nothing, and the cask has to be edited by hand.
+
 Check a finished release with `spctl -a -vv Handset.app` (expect `accepted`, `source=Notarized Developer ID`)
 and `xcrun stapler validate Handset.app`.
 

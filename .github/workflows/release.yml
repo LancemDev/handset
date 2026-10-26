@@ -47,6 +47,9 @@ jobs:
   build:
     name: build and attach binaries (macOS)
     needs: release
+    outputs:
+      version: ${{ steps.release-files.outputs.version }}
+      sha256: ${{ steps.release-files.outputs.sha256 }}
     # Tags made with the default token do not start other workflows, so the binaries are built here,
     # in the same run that tagged the release.
     if: ${{ !cancelled() && (needs.release.outputs.published == 'true' || github.event_name == 'workflow_dispatch') }}
@@ -87,7 +90,12 @@ jobs:
         run: |
           echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
           echo "NOTARY_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
-      - run: scripts/package-release.sh
+      - id: release-files
+        run: |
+          scripts/package-release.sh
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 "dist/release/Handset-$version-macos.zip" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Remove signing material
         if: always()
         run: |
@@ -106,3 +114,29 @@ jobs:
         with:
           name: handset-release-files
           path: dist/release/*
+
+  homebrew:
+    name: update the Homebrew cask
+    needs: [release, build]
+    if: ${{ needs.release.outputs.published == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+    steps:
+      - name: Bump the cask in davidamunga/homebrew-tap
+        if: env.TAP_GITHUB_TOKEN != ''
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/davidamunga/homebrew-tap.git" tap
+          cd tap
+          sed -i -E "s/^  version \".*\"/  version \"${VERSION}\"/; s/^  sha256 \".*\"/  sha256 \"${SHA256}\"/" Casks/handset.rb
+          if git diff --quiet; then echo "cask already at ${VERSION}"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "handset ${VERSION}"
+          git push origin HEAD:main
+      - name: No tap token
+        if: env.TAP_GITHUB_TOKEN == ''
+        run: echo "::notice::TAP_GITHUB_TOKEN is not set, so the Homebrew cask was not updated. See docs/runbooks/release.md."
