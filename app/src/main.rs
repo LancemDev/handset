@@ -9,6 +9,7 @@ mod frame;
 mod overlay;
 mod render;
 mod server;
+mod stream;
 mod toolbar;
 mod tools;
 
