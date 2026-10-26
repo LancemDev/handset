@@ -8,6 +8,7 @@ mod audio;
 mod capture;
 mod control;
 mod frame;
+mod menu;
 mod overlay;
 mod render;
 mod server;
