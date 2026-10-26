@@ -25,15 +25,33 @@ framed screenshots and recordings with audio.
 - A clickable "saved" toast, a recent captures menu and automatic clipboard copy
 - A small binary (about 5 MB) with the scrcpy server embedded
 
+## Install
+
+With [Homebrew](https://brew.sh) (installs the signed, notarised app, the `handset` command, and the
+`adb` and `ffmpeg` it needs):
+
+```sh
+brew install --cask davidamunga/tap/handset
+```
+
+Recent Homebrew versions only load casks from third-party taps you have trusted. If it says the tap is
+not trusted, run `brew trust davidamunga/tap` and install again.
+
+Or download `Handset-<version>-macos.zip` from the
+[releases page](https://github.com/davidamunga/handset/releases), unzip it and move `Handset.app` to
+Applications. The zip is a universal build (Apple Silicon and Intel). Check it against `SHA256SUMS` if you
+like. Install `adb` yourself in that case (`brew install --cask android-platform-tools`), and `ffmpeg` if
+you want recordings.
+
 ## Requirements
 
-- macOS on Apple Silicon or Intel (developed on a recent macOS)
+- macOS 12 or later, on Apple Silicon or Intel
 - An Android phone with USB debugging enabled (audio needs Android 11 or later)
 - [`adb`](https://developer.android.com/tools/releases/platform-tools) (Android platform-tools)
 - [`ffmpeg`](https://ffmpeg.org) for recording (optional)
 - Rust (stable) to build from source
 
-## Run it
+## Build and run from source
 
 ```sh
 git clone https://github.com/davidamunga/handset.git
@@ -48,8 +66,9 @@ scripts/package-macos.sh
 open dist/Handset.app
 ```
 
-The bundle is ad-hoc signed, so the first time you may need to right-click it and choose Open. To
-install the command line tool instead: `cargo install --path app --locked`.
+A bundle you build yourself is ad-hoc signed, so the first time you may need to right-click it and
+choose Open (the released app is signed and notarised and does not). To install the command line tool
+instead: `cargo install --path app --locked`.
 
 ## Using it
 
