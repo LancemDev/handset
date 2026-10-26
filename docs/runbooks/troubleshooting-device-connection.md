@@ -41,6 +41,11 @@ Errors are printed to the terminal. When launched from Finder they appear in an 
   are not captured by the server. That is expected.
 - **No audio.** Audio is opt-in (`--audio`) and needs Android 11 or later. Without it Handset prints
   that audio is unavailable and carries on.
+- **A recording has video but no audio.** Run `HANDSET_DEBUG=1 handset --audio` and look for ffmpeg
+  messages. An `Input contains (near) NaN/+-Inf` error means the loudness normaliser produced bad
+  samples; Handset guards against this, so please report it with the log if you still see it. As a
+  workaround, `--no-normalize` skips the normaliser. Check the file with
+  `ffprobe -show_entries stream=codec_type file.mp4`.
 - **Recording fails.** Recording needs `ffmpeg` (`brew install ffmpeg`). The `FFMPEG` environment
   variable overrides the lookup.
 - **First launch of the app from Finder.** Right-click the app and choose Open the first time (it is

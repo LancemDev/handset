@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- Recordings could lose their audio track when ffmpeg's loudness normaliser produced NaN samples
+
 ### Added
 
 - Mirror and control an Android phone over adb using the embedded, unmodified scrcpy server
