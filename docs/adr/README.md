@@ -14,3 +14,4 @@ Copy [`0000-template.md`](0000-template.md) to start a new one.
 | [0002](0002-build-a-native-rust-client.md) | Build a native Rust client instead of forking scrcpy | accepted |
 | [0003](0003-reuse-the-unmodified-scrcpy-server.md) | Reuse the unmodified scrcpy server | accepted |
 | [0004](0004-draw-device-frames-from-png-bezels.md) | Draw device frames from PNG bezels | accepted |
+| [0005](0005-render-with-wgpu-in-a-transparent-window.md) | Render with wgpu in a transparent window | accepted |
