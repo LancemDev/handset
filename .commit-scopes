@@ -1,4 +1,4 @@
-# Allowed commit scopes, one per line. Read by commitlint.config.js and .githooks/commit-msg.
+# Allowed commit scopes, one per line. Read by commitlint.config.mjs and .githooks/commit-msg.
 repo
 app
 adb

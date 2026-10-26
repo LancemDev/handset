@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Conventional Commits check. Mirrors commitlint.config.js (same types, scopes and limits)
+# Conventional Commits check. Mirrors commitlint.config.mjs (same types, scopes and limits)
 # so contributors do not need Node. Install with scripts/install-hooks.sh.
 set -euo pipefail
 

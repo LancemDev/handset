@@ -1,15 +1,14 @@
 // Conventional Commits, with the scopes from .commit-scopes.
 // The local hook in .githooks/commit-msg enforces the same rules without needing Node.
-const fs = require('node:fs');
-const path = require('node:path');
+import fs from 'node:fs';
 
 const scopes = fs
-  .readFileSync(path.join(__dirname, '.commit-scopes'), 'utf8')
+  .readFileSync(new URL('./.commit-scopes', import.meta.url), 'utf8')
   .split('\n')
   .map((line) => line.trim())
   .filter((line) => line && !line.startsWith('#'));
 
-module.exports = {
+export default {
   extends: ['@commitlint/config-conventional'],
   rules: {
     'scope-enum': [2, 'always', scopes],
