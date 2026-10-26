@@ -1,0 +1,18 @@
+[package]
+name = "handset"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "Mirror and control an Android phone inside a realistic device frame"
+license = "Apache-2.0"
+repository = "https://github.com/davidamunga/handset"
+publish = false
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
