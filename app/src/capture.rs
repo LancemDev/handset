@@ -168,6 +168,25 @@ pub fn save_png(rgba: &[u8], w: u32, h: u32) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// ffmpeg audio filter chain for recordings, or `None` when the audio is left as captured.
+///
+/// Gain comes first, then loudness normalisation (which also limits peaks). `loudnorm` has been seen to
+/// emit NaN now and then, which makes the AAC encoder drop the whole audio track, so a guard that turns
+/// NaN and infinity into silence follows it.
+fn audio_filters(settings: &Settings) -> Option<String> {
+    const NAN_GUARD: &str =
+        "aeval='if(isnan(val(0))+isinf(val(0)),0,val(0))|if(isnan(val(1))+isinf(val(1)),0,val(1))':c=same";
+    let mut filters = Vec::new();
+    if settings.gain_db != 0.0 {
+        filters.push(format!("volume={}dB", settings.gain_db));
+    }
+    if settings.normalize {
+        filters.push("loudnorm=I=-16:TP=-1.5:LRA=11".to_string());
+        filters.push(NAN_GUARD.to_string());
+    }
+    (!filters.is_empty()).then(|| filters.join(","))
+}
+
 /// Pipes raw RGBA frames to an `ffmpeg` child. Frames are dropped, not
 /// queued without bound, when ffmpeg cannot keep up.
 pub struct Recorder {
@@ -233,16 +252,8 @@ impl Recorder {
                         "48000",
                         "-shortest",
                     ]);
-                    // gain first, then loudness normalization (which also limits peaks)
-                    let mut filters = Vec::new();
-                    if settings.gain_db != 0.0 {
-                        filters.push(format!("volume={}dB", settings.gain_db));
-                    }
-                    if settings.normalize {
-                        filters.push("loudnorm=I=-16:TP=-1.5:LRA=11".to_string());
-                    }
-                    if !filters.is_empty() {
-                        cmd.args(["-af", &filters.join(",")]);
+                    if let Some(chain) = audio_filters(settings) {
+                        cmd.args(["-af", &chain]);
                     }
                 }
                 cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"])
@@ -355,6 +366,23 @@ mod tests {
             recent_captures(3).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["newest.mp4", "middle.png", "clip.gif"]);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn audio_filter_chain() {
+        let mut s = Settings::default();
+        let chain = audio_filters(&s).unwrap();
+        assert!(chain.starts_with("loudnorm="), "{chain}");
+        assert!(chain.contains("isnan"), "normalised audio is guarded against NaN: {chain}");
+
+        s.gain_db = 6.0;
+        assert!(audio_filters(&s).unwrap().starts_with("volume=6dB,loudnorm="));
+
+        s.normalize = false;
+        assert_eq!(audio_filters(&s).unwrap(), "volume=6dB");
+
+        s.gain_db = 0.0;
+        assert_eq!(audio_filters(&s), None);
     }
 
     /// Changes the real clipboard, so it only runs when asked for:
