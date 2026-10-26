@@ -4,16 +4,30 @@
 #![allow(dead_code)]
 
 mod adb;
+mod server;
 mod tools;
 
+use std::time::{Duration, Instant};
+
 fn main() -> std::io::Result<()> {
-    let devices = adb::devices()?;
-    if devices.is_empty() {
-        eprintln!("no adb device found");
-        std::process::exit(1);
+    let serial = adb::devices()?.into_iter().next().ok_or_else(|| std::io::Error::other("no adb device found"))?;
+    println!("device serial: {serial}");
+
+    let mut session = server::start(&serial, &server::Options::default())?;
+    println!("connected: {}", session.device_name);
+
+    let start = Instant::now();
+    let (mut frames, mut bytes) = (0u32, 0usize);
+    while start.elapsed() < Duration::from_secs(5) {
+        match server::read_packet(&mut session.video)? {
+            server::Packet::Session { width, height } => println!("session: {width}x{height}"),
+            server::Packet::Config(data) => println!("config packet: {} bytes", data.len()),
+            server::Packet::Frame { data, .. } => {
+                frames += 1;
+                bytes += data.len();
+            }
+        }
     }
-    for serial in devices {
-        println!("{serial}");
-    }
+    println!("{frames} frames, {bytes} bytes in 5s");
     Ok(())
 }
