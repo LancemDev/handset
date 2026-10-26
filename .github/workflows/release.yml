@@ -7,6 +7,8 @@ name: release
 on:
   push:
     branches: [main]
+  # Dry run: builds the release files and keeps them as a workflow artifact, publishes nothing.
+  workflow_dispatch:
 
 concurrency:
   group: release
@@ -19,6 +21,7 @@ permissions:
 jobs:
   release:
     name: version or tag
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       published: ${{ steps.changesets.outputs.published }}
@@ -40,3 +43,35 @@ jobs:
           title: "chore(release): version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: build and attach binaries (macOS)
+    needs: release
+    # Tags made with the default token do not start other workflows, so the binaries are built here,
+    # in the same run that tagged the release.
+    if: ${{ !cancelled() && (needs.release.outputs.published == 'true' || github.event_name == 'workflow_dispatch') }}
+    runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - run: scripts/package-release.sh
+      - name: Attach to the GitHub release
+        if: github.event_name == 'push'
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          gh release upload "v$version" dist/release/* --clobber
+          # 0.x releases are pre-releases
+          case "$version" in 0.*) gh release edit "v$version" --prerelease --latest=false ;; esac
+      - name: Keep the files as an artifact (dry run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: handset-release-files
+          path: dist/release/*

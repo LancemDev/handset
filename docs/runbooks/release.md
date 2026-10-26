@@ -22,10 +22,14 @@ refactors do not need one. While Handset is `0.x`, use `minor` for anything that
    request titled `chore(release): version packages`. It bumps `package.json`, `app/Cargo.toml` and
    `app/Cargo.lock` and writes the new section of `CHANGELOG.md`.
 2. Read that pull request. Edit `CHANGELOG.md` there if a summary needs rewording, then merge it.
-3. The workflow runs again on the merge, finds no changesets left, and tags the new version `vX.Y.Z`
-   and creates a GitHub release with the changelog section as its notes.
-4. Check the release page, then build the binaries from that tag (see the packaging runbook once it
-   exists; today use `scripts/package-macos.sh`).
+3. The workflow runs again on the merge, finds no changesets left, tags the new version `vX.Y.Z` and
+   creates a GitHub release with the changelog section as its notes.
+4. In the same run a macOS job builds the release files with `scripts/package-release.sh` and attaches
+   them to that release: `Handset-X.Y.Z-macos.zip` (universal app bundle),
+   `handset-X.Y.Z-macos.tar.gz` (the command line tool, with the licence and notice) and `SHA256SUMS`.
+   While the version is `0.x` it also marks the release as a pre-release.
+5. Check the release page. The files are ad-hoc signed, not notarised, so Gatekeeper blocks a
+   downloaded copy until it is opened with right-click, Open (or `xattr -dr com.apple.quarantine`).
 
 The first run after setup tags `v0.1.0`, the version already in `package.json`, without a version pull
 request.
@@ -34,9 +38,15 @@ request.
 
 - Settings > Actions > General > Workflow permissions: **Read and write**, and tick **Allow GitHub
   Actions to create and approve pull requests**. Without it the workflow cannot open the version PR.
-- Tags created with the default `GITHUB_TOKEN` do not start other workflows. A build that must run on
-  each release has to be a job in `release.yml` (using `needs` and the `published` output), or the
-  workflow needs a personal access token or GitHub App token.
+- Tags created with the default `GITHUB_TOKEN` do not start other workflows, which is why the binary
+  build is a job inside `release.yml` (using `needs` and the `published` output).
+
+## Trying the build without releasing
+
+Run the `release` workflow by hand (Actions > release > Run workflow, or `gh workflow run release.yml`).
+It builds the same files and keeps them as the `handset-release-files` artifact, and publishes nothing.
+Locally, `scripts/package-release.sh` writes them to `dist/release/` (needs both Rust targets,
+`rustup target add aarch64-apple-darwin x86_64-apple-darwin`).
 
 ## If something goes wrong
 

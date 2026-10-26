@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Build dist/Handset.app (macOS). Run: scripts/package-macos.sh
+# UNIVERSAL=1 builds for Apple Silicon and Intel and joins them with lipo (needs both rust targets).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -7,11 +8,16 @@ app="$root/dist/Handset.app"
 version="$(grep -m1 '^version' "$root/app/Cargo.toml" | cut -d'"' -f2)"
 
 target="${CARGO_TARGET_DIR:-$root/app/target}"
-(cd "$root/app" && cargo build --release)
-
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$target/release/handset" "$app/Contents/MacOS/handset"
+if [ "${UNIVERSAL:-0}" = 1 ]; then
+  (cd "$root/app" && cargo build --release --target aarch64-apple-darwin && cargo build --release --target x86_64-apple-darwin)
+  lipo -create "$target/aarch64-apple-darwin/release/handset" "$target/x86_64-apple-darwin/release/handset" \
+    -output "$app/Contents/MacOS/handset"
+else
+  (cd "$root/app" && cargo build --release)
+  cp "$target/release/handset" "$app/Contents/MacOS/handset"
+fi
 cp "$root/app/packaging/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 
 cat > "$app/Contents/Info.plist" <<PLIST
