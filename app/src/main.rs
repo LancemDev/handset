@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 mod adb;
+mod control;
 mod server;
 mod tools;
 
