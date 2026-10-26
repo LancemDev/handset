@@ -1,0 +1,182 @@
+//! Always-visible toolbar beside the phone: a vertical pill of round icon
+//! buttons, rasterized on the CPU with simple signed-distance shapes. It is
+//! drawn in the window only, never in screenshots or recordings.
+
+use crate::overlay::Pill;
+
+/// Width reserved beside the phone, as a fraction of the window height.
+pub const SIDE_FRAC: f32 = 0.075;
+/// Width of the pill itself, as a fraction of the window height.
+const WIDTH_FRAC: f32 = 0.052;
+
+pub const BUTTONS: usize = 6;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Button {
+    Screenshot,
+    Record,
+    Rotate,
+    NextFrame,
+    More,
+    Quit,
+}
+
+pub const ORDER: [Button; BUTTONS] =
+    [Button::Screenshot, Button::Record, Button::Rotate, Button::NextFrame, Button::More, Button::Quit];
+
+/// Size of one button cell, in pixels, for a window `wh` pixels high.
+fn cell(wh: f32) -> f32 {
+    (wh * WIDTH_FRAC).round().max(24.0)
+}
+
+/// Toolbar rectangle in window pixels: x, y, w, h. The pill is centred in the
+/// strip reserved at the right edge, and vertically centred.
+pub fn rect(ww: f32, wh: f32) -> [f32; 4] {
+    let c = cell(wh);
+    let (w, h) = (c, c * BUTTONS as f32);
+    let strip = SIDE_FRAC * wh;
+    [ww - strip + (strip - w) / 2.0, (wh - h) / 2.0, w, h]
+}
+
+/// Which button is under the window-pixel point, if any.
+pub fn button_at(ww: f32, wh: f32, x: f32, y: f32) -> Option<Button> {
+    let [rx, ry, rw, rh] = rect(ww, wh);
+    if x < rx || x >= rx + rw || y < ry || y >= ry + rh {
+        return None;
+    }
+    ORDER.get(((y - ry) / (rh / BUTTONS as f32)) as usize).copied()
+}
+
+fn cov(d: f32, px: f32) -> f32 {
+    (0.5 - d / px).clamp(0.0, 1.0)
+}
+
+type V = (f32, f32);
+fn len(p: V) -> f32 {
+    (p.0 * p.0 + p.1 * p.1).sqrt()
+}
+fn circle(p: V, c: V, r: f32) -> f32 {
+    len((p.0 - c.0, p.1 - c.1)) - r
+}
+fn rrect(p: V, c: V, half: V, r: f32) -> f32 {
+    let q = ((p.0 - c.0).abs() - half.0 + r, (p.1 - c.1).abs() - half.1 + r);
+    len((q.0.max(0.0), q.1.max(0.0))) + q.0.max(q.1).min(0.0) - r
+}
+fn seg(p: V, a: V, b: V) -> f32 {
+    let (pa, ba) = ((p.0 - a.0, p.1 - a.1), (b.0 - a.0, b.1 - a.1));
+    let h = ((pa.0 * ba.0 + pa.1 * ba.1) / (ba.0 * ba.0 + ba.1 * ba.1)).clamp(0.0, 1.0);
+    len((pa.0 - ba.0 * h, pa.1 - ba.1 * h))
+}
+fn triangle(p: V, a: V, b: V, c: V) -> f32 {
+    // distance to the closest edge, negative inside (convex polygon)
+    let edge = |u: V, v: V| {
+        let (e, w) = ((v.0 - u.0, v.1 - u.1), (p.0 - u.0, p.1 - u.1));
+        let l = len(e);
+        (e.0 * w.1 - e.1 * w.0) / l
+    };
+    let orient = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    let s = if orient > 0.0 { 1.0 } else { -1.0 };
+    -(edge(a, b) * s).min(edge(b, c) * s).min(edge(c, a) * s)
+}
+
+const WHITE: [f32; 3] = [245.0, 245.0, 247.0];
+const RED: [f32; 3] = [235.0, 60.0, 60.0];
+
+/// Coverage and colour of the icon of `button` at `p` (cell units, origin at
+/// the button centre, y down).
+fn icon(button: Button, p: V, px: f32, recording: bool) -> Option<(f32, [f32; 3])> {
+    match button {
+        Button::Screenshot => {
+            let body =
+                cov(rrect(p, (0.0, 0.03), (0.2, 0.13), 0.04), px) * (1.0 - cov(circle(p, (0.0, 0.03), 0.085), px));
+            let bump = cov(rrect(p, (-0.09, -0.115), (0.06, 0.03), 0.015), px);
+            let dot = cov(circle(p, (0.0, 0.03), 0.04), px);
+            Some((body.max(bump).max(dot), WHITE))
+        }
+        Button::Record => {
+            let ring = cov(circle(p, (0.0, 0.0), 0.225).abs() - 0.013, px);
+            let fill = if recording {
+                cov(rrect(p, (0.0, 0.0), (0.12, 0.12), 0.03), px)
+            } else {
+                cov(circle(p, (0.0, 0.0), 0.16), px)
+            };
+            if fill > 0.0 { Some((fill, RED)) } else { Some((ring, WHITE)) }
+        }
+        Button::Rotate => {
+            let r = len(p);
+            let ang = p.1.atan2(p.0).to_degrees();
+            // a ring open at the top right, with an arrow head at one end
+            let gap = ang > -75.0 && ang < -15.0;
+            let ring = cov((r - 0.16).abs() - 0.02, px) * if gap { 0.0 } else { 1.0 };
+            let a = (-15.0f32).to_radians();
+            let e = (0.16 * a.cos(), 0.16 * a.sin());
+            let t = (-a.sin(), a.cos()); // clockwise tangent
+            let n = (a.cos(), a.sin());
+            let tri = cov(
+                triangle(
+                    p,
+                    (e.0 + n.0 * 0.07, e.1 + n.1 * 0.07),
+                    (e.0 - n.0 * 0.07, e.1 - n.1 * 0.07),
+                    (e.0 + t.0 * 0.1, e.1 + t.1 * 0.1),
+                ),
+                px,
+            );
+            Some((ring.max(tri), WHITE))
+        }
+        Button::NextFrame => {
+            let outline = cov(rrect(p, (0.0, 0.0), (0.11, 0.19), 0.05).abs() - 0.017, px);
+            let cam = cov(circle(p, (0.0, -0.13), 0.02), px);
+            Some((outline.max(cam), WHITE))
+        }
+        Button::More => {
+            let d = [-0.12, 0.0, 0.12].iter().map(|x| cov(circle(p, (*x, 0.0), 0.035), px)).fold(0.0, f32::max);
+            Some((d, WHITE))
+        }
+        Button::Quit => {
+            let a = cov(seg(p, (-0.1, -0.1), (0.1, 0.1)) - 0.018, px);
+            let b = cov(seg(p, (-0.1, 0.1), (0.1, -0.1)) - 0.018, px);
+            Some((a.max(b), WHITE))
+        }
+    }
+}
+
+/// Rasterize the toolbar for a window `wh` pixels high. `hover` highlights a
+/// button; `recording` turns the record button into a stop square.
+pub fn raster(wh: f32, hover: Option<Button>, recording: bool) -> Pill {
+    let c = cell(wh);
+    let (w, h) = (c as u32, c as u32 * BUTTONS as u32);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    let r = w as f32 / 2.0;
+    let px = 1.0 / c; // one pixel, in cell units
+
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            // pill background with a thin lighter rim
+            let cy = fy.clamp(r, h as f32 - r);
+            let d = ((fx - r).powi(2) + (fy - cy).powi(2)).sqrt();
+            let a = (r - d + 0.5).clamp(0.0, 1.0);
+            let rim = r - d < 0.04 * c;
+            let (mut col, mut alpha) = (if rim { [96.0, 96.0, 110.0] } else { [20.0, 20.0, 24.0] }, a * 225.0);
+
+            let i = ((fy / c) as usize).min(BUTTONS - 1);
+            let p = (fx / c - 0.5, fy / c - (i as f32 + 0.5));
+            if hover == Some(ORDER[i]) {
+                let k = cov(circle(p, (0.0, 0.0), 0.38), px) * 0.22;
+                for c in col.iter_mut() {
+                    *c += (255.0 - *c) * k;
+                }
+                alpha = alpha.max(k * 255.0);
+            }
+            if let Some((k, ic)) = icon(ORDER[i], p, px, recording) {
+                for (c, i) in col.iter_mut().zip(ic) {
+                    *c += (i - *c) * k;
+                }
+                alpha = alpha.max(k * 255.0);
+            }
+            let o = ((y * w + x) * 4) as usize;
+            rgba[o..o + 4].copy_from_slice(&[col[0] as u8, col[1] as u8, col[2] as u8, alpha as u8]);
+        }
+    }
+    Pill { width: w, height: h, rgba }
+}

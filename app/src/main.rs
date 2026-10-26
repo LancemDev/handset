@@ -8,6 +8,7 @@ mod control;
 mod frame;
 mod overlay;
 mod server;
+mod toolbar;
 mod tools;
 
 use std::time::{Duration, Instant};
