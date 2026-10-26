@@ -19,6 +19,8 @@ use winit::event_loop::EventLoop;
 fn usage() -> ! {
     eprintln!(
         "usage: handset [--frame <name|path|none>] [--max-size <px>]\n\
+         \x20                  [--connect <ip[:port]> | --wifi] [serial]\n\
+         \x20      handset --pair <ip:port> <code>\n\
          \x20                  [--audio [--mute] [--gain <dB>] [--no-normalize]] [--no-clipboard] [--record-for <seconds>] [--record-format mp4|gif] [--record-size <px>] [--record-bg #rrggbb] [serial]\n\
          built-in frames: {}\n\
          right-click the phone for the menu; keys: Cmd/Ctrl+S screenshot, Cmd/Ctrl+E record, Cmd/Ctrl+R rotate",
@@ -34,6 +36,8 @@ fn main() {
     let mut cap = capture::Settings::default();
     let mut mute = false;
     let mut record_for: Option<f32> = None;
+    let mut connect: Option<String> = None;
+    let mut wifi = false;
     // no arguments: use the saved defaults (and `--audio` inside the app bundle)
     let given: Vec<String> = std::env::args().skip(1).collect();
     let mut args = if given.is_empty() { tools::default_args() } else { given }.into_iter();
@@ -55,6 +59,19 @@ fn main() {
             "--no-clipboard" => cap.clipboard = false,
             "--mute" => mute = true,
             "--record-for" => record_for = Some(args.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| usage())),
+            "--connect" => connect = Some(args.next().unwrap_or_else(|| usage())),
+            "--wifi" => wifi = true,
+            "--pair" => {
+                let addr = args.next().unwrap_or_else(|| usage());
+                let code = args.next().unwrap_or_else(|| usage());
+                match adb::pair(&addr, &code) {
+                    Ok(msg) => {
+                        println!("{msg}\nNow run: handset --connect <ip:port> (the address under Wireless debugging)");
+                        return;
+                    }
+                    Err(e) => tools::die(&e.to_string()),
+                }
+            }
             "-h" | "--help" => usage(),
             s if s.starts_with('-') => usage(),
             s => serial = Some(s.to_string()),
@@ -65,11 +82,23 @@ fn main() {
         .as_deref()
         .map(|s| frame::load(s).unwrap_or_else(|e| tools::die(&format!("Cannot load the frame: {e}"))));
 
-    let serial = serial.unwrap_or_else(|| {
-        adb::devices().ok().and_then(|d| d.into_iter().next()).unwrap_or_else(|| {
-            tools::die("No Android device found.\n\nConnect your phone over USB, turn on USB debugging and accept the prompt on the phone. Handset needs adb (Android platform-tools) installed.")
-        })
-    });
+    let serial = if let Some(addr) = &connect {
+        adb::connect(addr).unwrap_or_else(|e| tools::die(&e.to_string()))
+    } else {
+        let usb = serial.unwrap_or_else(|| {
+            adb::devices()
+                .ok()
+                .and_then(|d| d.into_iter().next())
+                .unwrap_or_else(|| tools::die(&adb::no_device_message(&adb::list().unwrap_or_default())))
+        });
+        if wifi {
+            let s = adb::wifi(&usb).unwrap_or_else(|e| tools::die(&e.to_string()));
+            eprintln!("on Wi-Fi as {s}: you can unplug the cable");
+            s
+        } else {
+            usb
+        }
+    };
 
     let session =
         server::start(&serial, &opts).unwrap_or_else(|e| tools::die(&format!("Could not start mirroring: {e}")));

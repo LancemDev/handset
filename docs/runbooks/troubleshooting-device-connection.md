@@ -19,6 +19,18 @@ If `adb` itself is missing, install the Android platform-tools. Handset finds `a
 `/opt/homebrew/bin`, `/usr/local/bin` and the Android SDK folder, and the `ADB` environment variable
 overrides the lookup.
 
+### Over Wi-Fi instead of USB
+
+- `handset --wifi` with the phone on USB switches it to adb over Wi-Fi (port 5555) and connects.
+- On Android 11 and later you can skip the cable: Developer options > Wireless debugging > Pair device
+  with pairing code, then `handset --pair <ip:port> <code>` (the pairing port is not the connection
+  port), then `handset --connect <ip:port>` using the address on the main Wireless debugging screen.
+- "Could not connect": the phone and the Mac must be on the same Wi-Fi, and guest or office networks often
+  isolate devices from each other. Turning Wireless debugging off and on gets a fresh port. A phone left in
+  `adb tcpip` mode goes back to USB with `adb usb`.
+- When the phone is listed as `unauthorized` or `offline`, Handset now says so and what to do instead of
+  "No Android device found".
+
 ## 2. Run from a terminal to see the real error
 
 ```sh

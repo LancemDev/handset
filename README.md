@@ -94,7 +94,15 @@ instead: `cargo install --path app --locked`.
 | `--record-format mp4\|gif` | Recording format |
 | `--record-size <px>` | Longest side of recordings (default 1280) |
 | `--record-bg #rrggbb` | Recording background colour |
+| `--connect <ip[:port]>` | Connect to a phone over Wi-Fi (`adb connect`, default port 5555) and mirror it |
+| `--pair <ip:port> <code>` | Pair with a phone using its Wireless debugging pairing code, then exit |
+| `--wifi` | Switch a USB-connected phone to Wi-Fi, connect, and mirror (you can unplug the cable) |
 | `[serial]` | Pick a device when several are connected |
+
+Over Wi-Fi: on Android 11 or later, open Developer options > Wireless debugging > Pair device with pairing
+code, run `handset --pair <ip:port> <code>` with what it shows, then `handset --connect <ip:port>` with the
+address on the main Wireless debugging screen. On any version, `handset --wifi` does it from a USB
+connection in one step. The phone and the Mac must be on the same network.
 
 With no arguments, `~/.config/handset/args` is used if it exists. `HANDSET_DEBUG=1` prints diagnostics.
 `ADB` and `FFMPEG` override where the tools are found.
