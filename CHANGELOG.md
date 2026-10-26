@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- The window froze on some phones (seen on a UNIWA W888): OpenH264's per-packet flush leaked pictures until its
+  pool ran out. Decoding no longer flushes, and a failed decoder is rebuilt instead of looping
 - Recordings could lose their audio track when ffmpeg's loudness normaliser produced NaN samples
 
 ### Added
