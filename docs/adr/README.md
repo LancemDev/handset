@@ -19,3 +19,4 @@ Copy [`0000-template.md`](0000-template.md) to start a new one.
 | [0007](0007-capture-raw-pcm-audio-and-play-it-with-cpal.md) | Capture raw PCM audio and play it with cpal | accepted |
 | [0008](0008-record-through-an-ffmpeg-sidecar.md) | Record through an ffmpeg sidecar | accepted |
 | [0009](0009-native-menu-on-macos-and-self-drawn-toolbar.md) | Native menu on macOS and a self-drawn toolbar | accepted |
+| [0010](0010-package-as-an-ad-hoc-signed-app-bundle.md) | Package as an ad-hoc signed app bundle | accepted |
