@@ -18,3 +18,18 @@ pub fn find(name: &str) -> PathBuf {
     );
     dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file()).unwrap_or_else(|| name.into())
 }
+
+/// Print an error and quit. When there is no terminal to read it (launched
+/// from Finder), show it in a dialog instead.
+pub fn die(msg: &str) -> ! {
+    use std::io::IsTerminal;
+    eprintln!("{msg}");
+    #[cfg(target_os = "macos")]
+    if !std::io::stderr().is_terminal() {
+        let text = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &format!("display alert \"Handset\" message \"{text}\" as critical")])
+            .output();
+    }
+    std::process::exit(1)
+}
