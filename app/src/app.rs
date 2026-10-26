@@ -477,6 +477,10 @@ impl App {
     /// The stream ended. Quit if there is nothing to recover; otherwise go back to the connect screen and
     /// wait for the phone to return, retrying the connection for a phone that was on Wi-Fi.
     fn on_disconnected(&mut self, el: &ActiveEventLoop) {
+        // the stream of a session ended on purpose (Phone menu) reports its end late: the connect screen is up
+        if self.mirror.is_none() && self.waiting.is_some() && self.auto_record.is_none() {
+            return;
+        }
         if self.mirror.is_none() || self.auto_record.is_some() {
             // nothing to recover, or `--record-for`, which ends with its session
             el.exit();
@@ -965,13 +969,33 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         let aspect = (self.bezel.as_ref().map_or(9.0 / 20.0, |b| b.aspect()) + toolbar::SIDE_FRAC) as f64;
-        let height = 820.0;
+        // fit the screen (leaving room for a taskbar or menu bar) rather than a fixed size
+        let monitor = el.primary_monitor().or_else(|| el.available_monitors().next());
+        let scale = monitor.as_ref().map_or(1.0, |m| m.scale_factor());
+        let area = work_area()
+            .or_else(|| monitor.as_ref().map(|m| (m.position().x, m.position().y, m.size().width, m.size().height)));
+        let height = area.map_or(820.0, |(_, _, _, h)| (h as f64 / scale * 0.95).clamp(400.0, 1000.0));
         let mut attrs = Window::default_attributes()
             .with_title(self.title.clone())
+            .with_window_icon(if cfg!(windows) { window_icon() } else { None })
             .with_inner_size(LogicalSize::new(height * aspect, height))
             .with_min_inner_size(LogicalSize::new(200.0 * aspect, 200.0));
+        #[cfg(windows)]
+        if let Some((x, y, w, h)) = area {
+            let (win_w, win_h) = ((height * aspect * scale) as i32, (height * scale) as i32);
+            attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(
+                x + (w as i32 - win_w) / 2,
+                y + (h as i32 - win_h) / 2,
+            ));
+        }
         if self.bezel.is_some() {
             attrs = attrs.with_transparent(true).with_decorations(false);
+            // the window's own (white) backing bitmap would show through the composition swapchain
+            #[cfg(windows)]
+            {
+                use winit::platform::windows::WindowAttributesExtWindows;
+                attrs = attrs.with_no_redirection_bitmap(true);
+            }
         }
         let window = Arc::new(el.create_window(attrs).expect("create window"));
         match Renderer::new(window.clone(), self.bezel.as_ref()) {
@@ -1296,4 +1320,42 @@ impl ApplicationHandler<UserEvent> for App {
             _ => {}
         }
     }
+}
+
+/// The app icon for the title bar and taskbar (macOS takes it from the bundle instead).
+fn window_icon() -> Option<winit::window::Icon> {
+    static ICON: &[u8] = include_bytes!("../packaging/icon/handset-icon-512.png");
+    let mut reader = png::Decoder::new(std::io::Cursor::new(ICON)).read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    winit::window::Icon::from_rgba(buf, info.width, info.height).ok()
+}
+
+/// The desktop area not covered by the taskbar, as (x, y, width, height) in pixels.
+#[cfg(windows)]
+fn work_area() -> Option<(i32, i32, u32, u32)> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+    unsafe extern "system" {
+        fn SystemParametersInfoW(action: u32, param: u32, pv: *mut Rect, flags: u32) -> i32;
+    }
+    let mut r = Rect::default();
+    // SAFETY: SPI_GETWORKAREA fills a RECT
+    let ok = unsafe { SystemParametersInfoW(0x30, 0, &mut r, 0) };
+    (ok != 0).then(|| (r.left, r.top, (r.right - r.left) as u32, (r.bottom - r.top) as u32))
+}
+
+#[cfg(not(windows))]
+fn work_area() -> Option<(i32, i32, u32, u32)> {
+    None
 }
