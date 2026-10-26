@@ -3,7 +3,7 @@
 
 use crate::render::Yuv;
 use crate::server::{self, Packet};
-use openh264::decoder::Decoder;
+use openh264::decoder::{Decoder, DecoderConfig, Flush};
 use openh264::formats::YUVSource;
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
@@ -50,8 +50,11 @@ fn describe(data: &[u8]) -> String {
     format!("{} bytes [{}]", data.len(), out.join(" "))
 }
 
+/// Frames are shown as soon as they decode. OpenH264's per-call flush leaks a picture per
+/// frame on some streams (the UNIWA W888's), which exhausts its pool a few frames in.
 fn new_decoder() -> Result<Decoder, openh264::Error> {
-    Decoder::new()
+    let config = DecoderConfig::new().flush_after_decode(Flush::NoFlush);
+    Decoder::with_api_config(openh264::OpenH264API::from_source(), config)
 }
 
 pub fn spawn(mut video: TcpStream, slot: Arc<Mutex<Slot>>, proxy: EventLoopProxy<UserEvent>) {
