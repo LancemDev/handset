@@ -1,0 +1,53 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you see instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Plug in the phone
+        2. Run `handset --audio`
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: handset
+    attributes:
+      label: Handset version or commit
+      placeholder: e.g. 0.1.0 or a commit hash
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: macOS version and chip
+      placeholder: e.g. macOS 15.1, Apple M2
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: Phone model and Android version
+      placeholder: e.g. Pixel 8, Android 15
+    validations:
+      required: true
+  - type: input
+    id: adb
+    attributes:
+      label: adb version
+      description: Output of `adb version`
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `HANDSET_DEBUG=1 handset` (it prints to the terminal).
+      render: text
