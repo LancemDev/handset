@@ -6,10 +6,11 @@
 //! whose rectangles are returned alongside it, and handed to the renderer like a video frame.
 
 use crate::adb;
-use crate::overlay::glyph;
 use crate::render::Yuv;
 use crate::stream::UserEvent;
+use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
 use qrcode::{Color, QrCode};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use winit::event_loop::EventLoopProxy;
@@ -208,20 +209,94 @@ fn random_alnum(n: usize) -> String {
     bytes.iter().map(|b| CHARS[*b as usize % CHARS.len()] as char).collect()
 }
 
-const BG: [u8; 3] = [16, 20, 26];
-const WHITE: [u8; 3] = [245, 245, 247];
-const MUTED: [u8; 3] = [150, 158, 170];
-const AMBER: [u8; 3] = [255, 179, 0];
-const RED: [u8; 3] = [255, 84, 73];
+// Handset's colours, taken from the app icon: its green, its teal, and the pale mint of its plate.
+const BG: [u8; 3] = [8, 24, 22];
+const SURFACE: [u8; 3] = [14, 54, 50];
+const SURFACE_HOVER: [u8; 3] = [7, 112, 99];
 const GREEN: [u8; 3] = [48, 221, 129];
-const BUTTON: [u8; 3] = [30, 38, 50];
-const BUTTON_HOVER: [u8; 3] = [48, 60, 80];
-const BUTTON_EDGE: [u8; 3] = [90, 104, 126];
+const TEXT: [u8; 3] = [217, 245, 229];
+const MUTED: [u8; 3] = [128, 166, 156];
+const AMBER: [u8; 3] = [255, 190, 60];
+const RED: [u8; 3] = [255, 110, 100];
+
+static REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+static SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
+static LOGO_PNG: &[u8] = include_bytes!("../packaging/icon/handset-icon-512.png");
+
+/// How a run of text looks: weight, size in design units, colour.
+#[derive(Clone, Copy)]
+struct Style(Weight, f32, [u8; 3]);
+
+#[derive(Clone, Copy, PartialEq)]
+enum Weight {
+    Regular,
+    Semibold,
+}
+
+fn font(weight: Weight) -> &'static FontRef<'static> {
+    static FONTS: OnceLock<[FontRef<'static>; 2]> = OnceLock::new();
+    let fonts = FONTS.get_or_init(|| {
+        [
+            FontRef::try_from_slice(REGULAR).expect("bundled Inter Regular"),
+            FontRef::try_from_slice(SEMIBOLD).expect("bundled Inter SemiBold"),
+        ]
+    });
+    &fonts[weight as usize]
+}
+
+/// The app icon, decoded once: width, height, straight-alpha RGBA.
+fn logo() -> &'static (u32, u32, Vec<u8>) {
+    static LOGO: OnceLock<(u32, u32, Vec<u8>)> = OnceLock::new();
+    LOGO.get_or_init(|| {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(LOGO_PNG)).read_info().expect("bundled icon");
+        let mut buf = vec![0; reader.output_buffer_size().expect("icon size")];
+        let info = reader.next_frame(&mut buf).expect("bundled icon pixels");
+        buf.truncate(info.buffer_size());
+        (info.width, info.height, buf)
+    })
+}
+
+/// Width of `text` in pixels at `px` size.
+fn measure(weight: Weight, px: f32, text: &str) -> f32 {
+    let scaled = font(weight).as_scaled(PxScale::from(px));
+    let mut width = 0.0;
+    let mut prev = None;
+    for ch in text.chars() {
+        let id = scaled.glyph_id(ch);
+        if let Some(p) = prev {
+            width += scaled.kern(p, id);
+        }
+        width += scaled.h_advance(id);
+        prev = Some(id);
+    }
+    width
+}
+
+/// Break `text` into lines no wider than `max_w` pixels, on spaces.
+fn wrap(weight: Weight, px: f32, max_w: f32, text: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+        if !line.is_empty() && measure(weight, px, &candidate) > max_w {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
 
 struct Canvas {
     w: u32,
     h: u32,
     px: Vec<u8>,
+    /// Pixels per design unit: the picture is designed at 776 wide.
+    u: f32,
 }
 
 impl Canvas {
@@ -230,111 +305,156 @@ impl Canvas {
         for _ in 0..w * h {
             px.extend_from_slice(&BG);
         }
-        Self { w, h, px }
+        Self { w, h, px, u: w as f32 / 776.0 }
     }
 
-    fn put(&mut self, x: u32, y: u32, c: [u8; 3]) {
-        if x < self.w && y < self.h {
-            let i = ((y * self.w + x) * 3) as usize;
-            self.px[i..i + 3].copy_from_slice(&c);
+    /// Design units to pixels.
+    fn d(&self, v: f32) -> f32 {
+        v * self.u
+    }
+
+    /// Text sizes are a little larger than the layout units: the screen is small on a desktop.
+    fn px(&self, size: f32) -> f32 {
+        size * self.u * 1.18
+    }
+
+    /// Blend `c` over the pixel at (x, y) with coverage `a` (0 to 1).
+    fn blend(&mut self, x: i64, y: i64, c: [u8; 3], a: f32) {
+        if x < 0 || y < 0 || x >= self.w as i64 || y >= self.h as i64 || a <= 0.0 {
+            return;
+        }
+        let i = ((y as u32 * self.w + x as u32) * 3) as usize;
+        let a = a.min(1.0);
+        for (dst, src) in self.px[i..i + 3].iter_mut().zip(c) {
+            *dst = (*dst as f32 * (1.0 - a) + src as f32 * a).round() as u8;
         }
     }
 
-    fn text(&mut self, x: u32, y: u32, s: u32, text: &str, c: [u8; 3]) {
-        for (n, ch) in text.chars().enumerate() {
-            let gx = x + n as u32 * 6 * s;
-            for (row, bits) in glyph(ch).iter().enumerate() {
-                for col in 0..5u32 {
-                    if bits & (1 << (4 - col)) != 0 {
-                        for dy in 0..s {
-                            for dx in 0..s {
-                                self.put(gx + col * s + dx, y + row as u32 * s + dy, c);
-                            }
-                        }
+    /// Draw one line of text with its top at `y`; returns its width.
+    fn text(&mut self, x: f32, y: f32, weight: Weight, size: f32, c: [u8; 3], text: &str) -> f32 {
+        let px = self.px(size);
+        let f = font(weight);
+        let scaled = f.as_scaled(PxScale::from(px));
+        let baseline = y + scaled.ascent();
+        let mut caret = x;
+        let mut prev = None;
+        for ch in text.chars() {
+            let id = scaled.glyph_id(ch);
+            if let Some(p) = prev {
+                caret += scaled.kern(p, id);
+            }
+            let glyph = id.with_scale_and_position(PxScale::from(px), point(caret, baseline));
+            if let Some(outline) = f.outline_glyph(glyph) {
+                let b = outline.px_bounds();
+                outline.draw(|gx, gy, cov| self.blend(b.min.x as i64 + gx as i64, b.min.y as i64 + gy as i64, c, cov));
+            }
+            caret += scaled.h_advance(id);
+            prev = Some(id);
+        }
+        caret - x
+    }
+
+    /// Line height for `size`.
+    fn line(&self, size: f32) -> f32 {
+        self.px(size) * 1.38
+    }
+
+    /// Text centred on `cx`.
+    fn text_centered(&mut self, cx: f32, y: f32, weight: Weight, size: f32, c: [u8; 3], text: &str) {
+        let w = measure(weight, self.px(size), text);
+        self.text(cx - w / 2.0, y, weight, size, c, text);
+    }
+
+    /// A wrapped paragraph; returns the y below it.
+    fn para(&mut self, x: f32, y: f32, max_w: f32, style: Style, text: &str) -> f32 {
+        let Style(weight, size, colour) = style;
+        let mut y = y;
+        for line in wrap(weight, self.px(size), max_w, text) {
+            self.text(x, y, weight, size, colour, &line);
+            y += self.line(size);
+        }
+        y
+    }
+
+    fn disc(&mut self, cx: f32, cy: f32, r: f32, c: [u8; 3]) {
+        for y in (cy - r - 1.0).floor() as i64..=(cy + r + 1.0).ceil() as i64 {
+            for x in (cx - r - 1.0).floor() as i64..=(cx + r + 1.0).ceil() as i64 {
+                let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+                self.blend(x, y, c, r - d + 0.5);
+            }
+        }
+    }
+
+    /// A rounded rectangle, filled, with an optional border drawn inside it.
+    fn round_rect(&mut self, rect: [f32; 4], radius: f32, fill: Option<[u8; 3]>, border: Option<([u8; 3], f32)>) {
+        let [x, y, w, h] = rect;
+        let r = radius.min(w / 2.0).min(h / 2.0);
+        for py in y.floor() as i64..(y + h).ceil() as i64 {
+            for px in x.floor() as i64..(x + w).ceil() as i64 {
+                // distance outside the rounded shape (negative inside)
+                let qx = ((px as f32 + 0.5 - (x + w / 2.0)).abs() - (w / 2.0 - r)).max(0.0);
+                let qy = ((py as f32 + 0.5 - (y + h / 2.0)).abs() - (h / 2.0 - r)).max(0.0);
+                let dist = (qx * qx + qy * qy).sqrt() - r;
+                let inside = (0.5 - dist).clamp(0.0, 1.0);
+                if let Some(f) = fill {
+                    self.blend(px, py, f, inside);
+                }
+                if let Some((bc, bw)) = border {
+                    let ring = inside.min((dist + bw + 0.5).clamp(0.0, 1.0));
+                    self.blend(px, py, bc, ring);
+                }
+            }
+        }
+    }
+
+    /// The app icon, `size` design units wide, with its top-left at (x, y).
+    fn logo(&mut self, x: f32, y: f32, size: f32) {
+        let (lw, lh, rgba) = logo();
+        let side = self.d(size).round().max(1.0) as u32;
+        for ty in 0..side {
+            for tx in 0..side {
+                // average the source pixels under this target pixel, weighted by alpha
+                let (x0, x1) = (tx * lw / side, ((tx + 1) * lw / side).max(tx * lw / side + 1));
+                let (y0, y1) = (ty * lh / side, ((ty + 1) * lh / side).max(ty * lh / side + 1));
+                let (mut r, mut g, mut b, mut a, mut n) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                for sy in y0..y1.min(*lh) {
+                    for sx in x0..x1.min(*lw) {
+                        let i = ((sy * lw + sx) * 4) as usize;
+                        let al = rgba[i + 3] as f32 / 255.0;
+                        r += rgba[i] as f32 * al;
+                        g += rgba[i + 1] as f32 * al;
+                        b += rgba[i + 2] as f32 * al;
+                        a += al;
+                        n += 1.0;
                     }
                 }
-            }
-        }
-    }
-
-    fn dot(&mut self, cx: u32, cy: u32, r: u32, c: [u8; 3]) {
-        for y in cy.saturating_sub(r)..=cy + r {
-            for x in cx.saturating_sub(r)..=cx + r {
-                let (dx, dy) = (x as f32 - cx as f32, y as f32 - cy as f32);
-                if dx * dx + dy * dy <= (r * r) as f32 {
-                    self.put(x, y, c);
+                if a > 0.0 {
+                    let c = [(r / a).round() as u8, (g / a).round() as u8, (b / a).round() as u8];
+                    self.blend(x as i64 + tx as i64, y as i64 + ty as i64, c, a / n);
                 }
             }
         }
     }
 
-    fn rect(&mut self, x: u32, y: u32, w: u32, h: u32, c: [u8; 3]) {
-        for yy in y..y + h {
-            for xx in x..x + w {
-                self.put(xx, yy, c);
-            }
+    /// A pill button with a centred label that shrinks until it fits.
+    fn button(&mut self, rect: [u32; 4], label: &str, hover: bool, quiet: bool) {
+        let r = [rect[0] as f32, rect[1] as f32, rect[2] as f32, rect[3] as f32];
+        let bw = self.d(3.0).max(1.0);
+        if quiet {
+            self.round_rect(r, r[3] / 2.0, hover.then_some(SURFACE), Some((if hover { GREEN } else { MUTED }, bw)));
+        } else {
+            let fill = if hover { SURFACE_HOVER } else { SURFACE };
+            self.round_rect(r, r[3] / 2.0, Some(fill), Some((GREEN, bw)));
         }
-    }
-
-    /// A rounded button with a border and a centred label.
-    fn button(&mut self, rect: [u32; 4], s: u32, label: &str, hover: bool) {
-        let [x, y, w, h] = rect;
-        let r = 3 * s;
-        let fill = if hover { BUTTON_HOVER } else { BUTTON };
-        let edge = if hover { WHITE } else { BUTTON_EDGE };
-        for yy in 0..h {
-            for xx in 0..w {
-                // how far outside the rounded corner this pixel's corner square reaches, 0 away from corners
-                let cx = if xx < r {
-                    r - xx
-                } else if xx >= w - r {
-                    xx - (w - r) + 1
-                } else {
-                    0
-                };
-                let cy = if yy < r {
-                    r - yy
-                } else if yy >= h - r {
-                    yy - (h - r) + 1
-                } else {
-                    0
-                };
-                let corner = cx > 0 && cy > 0;
-                if corner && cx * cx + cy * cy > r * r {
-                    continue;
-                }
-                let border =
-                    xx < s || yy < s || xx >= w - s || yy >= h - s || (corner && cx * cx + cy * cy > (r - s) * (r - s));
-                self.put(x + xx, y + yy, if border { edge } else { fill });
-            }
+        let mut size = 38.0;
+        while size > 20.0 && measure(Weight::Semibold, self.px(size), label) > r[2] - self.d(56.0) {
+            size -= 2.0;
         }
-        // the label shrinks (down to scale 3) until it fits, then is cut
-        let n = label.chars().count() as u32;
-        let ls = (3..=s).rev().find(|ls| (n * 6 * ls).saturating_sub(*ls) + 8 * s <= w).unwrap_or(3.min(s));
-        let fit = ((w.saturating_sub(4 * s)) / (6 * ls)).max(1) as usize;
-        let label: String = label.chars().take(fit).collect();
-        let tw = (label.chars().count() as u32 * 6 * ls).saturating_sub(ls);
-        self.text(x + w.saturating_sub(tw) / 2, y + h.saturating_sub(7 * ls) / 2, ls, &label, WHITE);
+        let px = self.px(size);
+        let top = r[1] + (r[3] - self.line(size) / 1.0) / 2.0 + self.d(size * 0.04);
+        let _ = px;
+        self.text_centered(r[0] + r[2] / 2.0, top, Weight::Semibold, size, TEXT, label);
     }
-}
-
-/// Break `text` into lines of at most `max` characters, on spaces.
-fn wrap(text: &str, max: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > max {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 
 struct Words {
@@ -342,8 +462,9 @@ struct Words {
     status: String,
     colour: [u8; 3],
     animate: bool,
-    /// Numbered or plain paragraphs, in white.
+    /// Paragraphs, or numbered steps when `numbered`.
     body: Vec<String>,
+    numbered: bool,
     /// Smaller print, in grey.
     hint: String,
     /// Which phone this is about, if any.
@@ -351,63 +472,65 @@ struct Words {
 }
 
 fn words(status: &Status) -> Words {
-    let w = |status: &str, colour, animate, body: &[&str], hint: &str, phone: Option<&String>| Words {
+    let w = |status: &str, colour, animate, body: &[&str], numbered, hint: &str, phone: Option<&String>| Words {
         status: status.to_string(),
         colour,
         animate,
         body: body.iter().map(|s| s.to_string()).collect(),
+        numbered,
         hint: hint.to_string(),
         phone: phone.cloned(),
     };
     match status {
         Status::Looking => w(
-            "LOOKING FOR A PHONE",
+            "Looking for a phone",
             AMBER,
             true,
-            &[
-                "1 PLUG IT IN WITH A USB CABLE",
-                "2 TURN ON USB DEBUGGING IN DEVELOPER OPTIONS",
-                "3 TAP ALLOW ON THE PHONE",
-            ],
+            &["Plug it in with a USB cable", "Turn on USB debugging in Developer options", "Tap Allow on the phone"],
+            true,
             "",
             None,
         ),
         Status::Unauthorized(s) => w(
-            "ALLOW THIS MAC ON THE PHONE",
+            "Allow this Mac on the phone",
             AMBER,
             false,
-            &["UNLOCK THE PHONE AND TAP ALLOW ON THE ALLOW USB DEBUGGING? PROMPT."],
-            "NO PROMPT? UNPLUG THE CABLE, TURN USB DEBUGGING OFF AND ON, AND PLUG IT BACK IN.",
+            &["Unlock the phone and tap Allow on the \"Allow USB debugging?\" prompt."],
+            false,
+            "No prompt? Unplug the cable, turn USB debugging off and on, and plug it back in.",
             Some(s),
         ),
         Status::Offline(s) => w(
-            "THE PHONE IS OFFLINE",
+            "The phone is offline",
             RED,
             false,
-            &["UNPLUG AND REPLUG THE CABLE."],
-            "IF IT STAYS OFFLINE, RUN ADB KILL-SERVER AND TRY AGAIN.",
+            &["Unplug and replug the cable."],
+            false,
+            "If it stays offline, run adb kill-server and try again.",
             Some(s),
         ),
         Status::Permissions(s) => w(
-            "NO ACCESS TO THE PHONE",
+            "No access to the phone",
             RED,
             false,
-            &["ADB REPORTS A PERMISSIONS PROBLEM.", "TRY ANOTHER CABLE OR USB PORT."],
+            &["adb reports a permissions problem.", "Try another cable or USB port."],
+            false,
             "",
             Some(s),
         ),
         Status::AdbMissing => w(
-            "ADB IS MISSING",
+            "adb is missing",
             RED,
             false,
-            &["HANDSET NEEDS ANDROID PLATFORM-TOOLS."],
-            "INSTALL IT WITH: BREW INSTALL --CASK ANDROID-PLATFORM-TOOLS",
+            &["Handset needs Android platform-tools."],
+            false,
+            "Install it with: brew install --cask android-platform-tools",
             None,
         ),
-        Status::Connecting(s) => w("CONNECTING", GREEN, true, &["STARTING MIRRORING."], "", Some(s)),
+        Status::Connecting(s) => w("Connecting", GREEN, true, &["Starting mirroring."], false, "", Some(s)),
         Status::Failed(msg) => {
             let short: String = msg.chars().take(140).collect();
-            w("COULD NOT START MIRRORING", RED, false, &[&short], "REPLUG THE PHONE TO TRY AGAIN.", None)
+            w("Could not start mirroring", RED, false, &[&short], false, "Replug the phone to try again.", None)
         }
     }
 }
@@ -437,100 +560,136 @@ pub struct Screen {
 /// The screen as RGB, `w` by `h` pixels, and where its buttons are.
 pub fn render(w: u32, h: u32, m: &Model) -> Screen {
     let mut c = Canvas::new(w, h);
-    let s = (w / 115).max(1);
-    let margin = 9 * s;
-    let max_chars = ((w.saturating_sub(2 * margin)) / (6 * s)).max(8) as usize;
-    let line_h = 11 * s;
-    let (btn_h, gap) = (15 * s, 4 * s);
-    let btn_w = w.saturating_sub(2 * margin);
+    let u = c.u;
+    let margin = 56.0 * u;
+    let content_w = w as f32 - 2.0 * margin;
+    let (btn_h, gap) = (100.0 * u, 24.0 * u);
     let mut buttons: Vec<Button> = Vec::new();
+    let dots = ".".repeat((m.tick % 4) as usize);
 
-    let mut y = h / 11;
-    let title = match m.view {
-        View::Home => "CONNECT A PHONE",
-        View::Wifi => "PHONES ON WI-FI",
-        View::Qr => "SCAN TO PAIR",
-    };
-    c.text(margin, y, s, title, WHITE);
-    y += 2 * line_h;
+    // header: the icon large on the home screen, small beside the title elsewhere
+    let mut y;
+    if m.view == View::Home {
+        c.logo((776.0 - 190.0) / 2.0 * 1.0, 86.0, 190.0);
+        y = 300.0 * u;
+        c.text_centered(w as f32 / 2.0, y, Weight::Semibold, 54.0, TEXT, "Connect a phone");
+        y += c.line(54.0) + 14.0 * u;
+    } else {
+        c.logo(56.0, 70.0, 92.0);
+        let title = if m.view == View::Wifi { "Phones on Wi-Fi" } else { "Scan to pair" };
+        c.text(
+            margin + 92.0 * u + 24.0 * u,
+            70.0 * u + (92.0 * u - c.line(46.0)) / 2.0,
+            Weight::Semibold,
+            46.0,
+            TEXT,
+            title,
+        );
+        y = 200.0 * u;
+    }
 
     // bottom buttons are stacked upwards from the bottom edge; `bottom` is the top of the stack
-    let mut bottom = h.saturating_sub(margin * 3);
+    let mut bottom = h as f32 - 70.0 * u;
     let mut stack = |label: &str, action: Action, buttons: &mut Vec<Button>| {
-        bottom = bottom.saturating_sub(btn_h);
-        buttons.push(Button { rect: [margin, bottom, btn_w, btn_h], label: label.to_string(), action });
-        bottom = bottom.saturating_sub(gap);
+        bottom -= btn_h;
+        buttons.push(Button {
+            rect: [margin as u32, bottom as u32, content_w as u32, btn_h as u32],
+            label: label.to_string(),
+            action,
+        });
+        bottom -= gap;
     };
 
     match m.view {
         View::Home => {
-            stack("QR CODE", Action::Open(View::Qr), &mut buttons);
-            stack("WI-FI", Action::Open(View::Wifi), &mut buttons);
+            stack("QR code", Action::Open(View::Qr), &mut buttons);
+            stack("Wi-Fi", Action::Open(View::Wifi), &mut buttons);
             let words = words(m.status);
-            let dots = if words.animate { ".".repeat((m.tick % 4) as usize) } else { String::new() };
             let lit = !words.animate || m.tick.is_multiple_of(2);
-            let dot_colour =
-                if lit { words.colour } else { [words.colour[0] / 3, words.colour[1] / 3, words.colour[2] / 3] };
-            c.dot(margin + 5 * s / 2, y + 7 * s / 2, 5 * s / 2, dot_colour);
-            let status_lines = wrap(&words.status, max_chars.saturating_sub(3));
-            for (i, line) in status_lines.iter().enumerate() {
-                let shown = if i + 1 == status_lines.len() { format!("{line}{dots}") } else { line.clone() };
-                c.text(margin + 8 * s, y + i as u32 * line_h, s, &shown, words.colour);
-            }
-            y += status_lines.len() as u32 * line_h + line_h;
-            for para in &words.body {
-                for line in wrap(para, max_chars) {
-                    c.text(margin, y, s, &line, WHITE);
-                    y += line_h;
+            let dot = if lit { words.colour } else { [words.colour[0] / 3, words.colour[1] / 3, words.colour[2] / 3] };
+            let text_x = margin + 38.0 * u;
+            let status = if words.animate { format!("{}{dots}", words.status) } else { words.status.clone() };
+            c.disc(margin + 11.0 * u, y + c.line(36.0) / 2.0, 10.0 * u, dot);
+            y = c.para(text_x, y, content_w - 38.0 * u, Style(Weight::Semibold, 36.0, words.colour), &status)
+                + 26.0 * u;
+            for (i, item) in words.body.iter().enumerate() {
+                if words.numbered {
+                    let top = y;
+                    let tx = margin + 66.0 * u;
+                    let lines = wrap(Weight::Regular, c.px(32.0), content_w - 66.0 * u, item).len().max(1) as f32;
+                    let row = (lines * c.line(32.0)).max(48.0 * u);
+                    c.disc(margin + 24.0 * u, top + 24.0 * u, 24.0 * u, SURFACE);
+                    c.text_centered(
+                        margin + 24.0 * u,
+                        top + 24.0 * u - c.line(28.0) / 2.0,
+                        Weight::Semibold,
+                        28.0,
+                        GREEN,
+                        &(i + 1).to_string(),
+                    );
+                    c.para(
+                        tx,
+                        top + 24.0 * u - c.line(32.0) / 2.0,
+                        content_w - 66.0 * u,
+                        Style(Weight::Regular, 32.0, TEXT),
+                        item,
+                    );
+                    y += row + 22.0 * u;
+                } else {
+                    y = c.para(margin, y, content_w, Style(Weight::Regular, 32.0, TEXT), item) + 10.0 * u;
                 }
-                y += line_h / 2;
             }
             if let Some(phone) = &words.phone {
-                for line in wrap(&format!("PHONE {phone}"), max_chars) {
-                    c.text(margin, y, s, &line, MUTED);
-                    y += line_h;
-                }
+                y = c.para(
+                    margin,
+                    y + 6.0 * u,
+                    content_w,
+                    Style(Weight::Regular, 28.0, MUTED),
+                    &format!("Phone {phone}"),
+                );
             }
             // small print only while it clears the buttons and their lead-in
-            let room = bottom.saturating_sub(line_h * 2 + 7 * s);
-            for line in wrap(&words.hint, max_chars) {
-                if y + line_h > room {
+            let room = bottom - 70.0 * u;
+            for line in wrap(Weight::Regular, c.px(28.0), content_w, &words.hint) {
+                if y + c.line(28.0) > room {
                     break;
                 }
-                c.text(margin, y, s, &line, MUTED);
-                y += line_h;
+                c.text(margin, y + 6.0 * u, Weight::Regular, 28.0, MUTED, &line);
+                y += c.line(28.0);
             }
-            c.text(margin, bottom.saturating_sub(line_h / 2 + 7 * s), s, "NO CABLE?", MUTED);
+            c.text_centered(
+                w as f32 / 2.0,
+                bottom - 14.0 * u - c.line(28.0),
+                Weight::Regular,
+                28.0,
+                MUTED,
+                "No cable? Connect another way",
+            );
         }
         View::Wifi => {
-            stack("BACK", Action::Back, &mut buttons);
+            stack("Back", Action::Back, &mut buttons);
             if let Some(usb) = m.usb {
-                let short: String = usb.chars().take(max_chars.saturating_sub(10)).collect();
-                stack(&format!("SWITCH {short} TO WI-FI"), Action::SwitchToWifi(usb.to_string()), &mut buttons);
+                stack(&format!("Switch {usb} to Wi-Fi"), Action::SwitchToWifi(usb.to_string()), &mut buttons);
             }
-            stack("TYPE AN ADDRESS", Action::TypeAddress, &mut buttons);
-            for line in wrap("TAP A PAIRED PHONE TO CONNECT:", max_chars) {
-                c.text(margin, y, s, &line, MUTED);
-                y += line_h;
-            }
-            y += line_h / 2;
+            stack("Type an address", Action::TypeAddress, &mut buttons);
+            y = c.para(margin, y, content_w, Style(Weight::Regular, 32.0, MUTED), "Tap a paired phone to connect")
+                + 22.0 * u;
             let connectable: Vec<&adb::Service> =
                 m.nearby.iter().filter(|n| n.kind == adb::ServiceKind::Connect).take(2).collect();
             if connectable.is_empty() {
-                let dots = ".".repeat((m.tick % 4) as usize);
-                c.text(margin, y, s, &format!("NONE FOUND YET{dots}"), AMBER);
-                y += line_h + line_h / 2;
-                for line in wrap(
-                    "TURN ON WIRELESS DEBUGGING IN DEVELOPER OPTIONS. A NEW PHONE NEEDS PAIRING ONCE: USE QR CODE.",
-                    max_chars,
-                ) {
-                    c.text(margin, y, s, &line, MUTED);
-                    y += line_h;
-                }
+                c.text(margin, y, Weight::Semibold, 34.0, AMBER, &format!("None found yet{dots}"));
+                y += c.line(34.0) + 14.0 * u;
+                c.para(
+                    margin,
+                    y,
+                    content_w,
+                    Style(Weight::Regular, 30.0, MUTED),
+                    "Turn on Wireless debugging in Developer options. A new phone needs pairing once: use the QR code.",
+                );
             }
             for n in connectable {
                 buttons.push(Button {
-                    rect: [margin, y, btn_w, btn_h],
+                    rect: [margin as u32, y as u32, content_w as u32, btn_h as u32],
                     label: n.addr.clone(),
                     action: Action::Connect(n.addr.clone()),
                 });
@@ -539,63 +698,62 @@ pub fn render(w: u32, h: u32, m: &Model) -> Screen {
             // notes sit just above the buttons: progress or trouble first, then the USB hint above it
             let mut ny = bottom;
             if let Some(note) = m.note {
-                let lines: Vec<String> = wrap(note, max_chars).into_iter().take(3).collect();
-                ny = ny.saturating_sub(lines.len() as u32 * line_h + line_h / 2);
-                for (k, line) in lines.iter().enumerate() {
-                    c.text(margin, ny + k as u32 * line_h, s, line, AMBER);
-                }
+                let n = wrap(Weight::Semibold, c.px(30.0), content_w, note).len().min(3) as f32;
+                ny -= n * c.line(30.0) + 10.0 * u;
+                c.para(margin, ny, content_w, Style(Weight::Semibold, 30.0, AMBER), note);
             }
             if m.usb.is_some() {
-                let hint = wrap("A USB PHONE IS PLUGGED IN.", max_chars);
-                ny = ny.saturating_sub(hint.len() as u32 * line_h + line_h / 2);
-                for (k, line) in hint.iter().enumerate() {
-                    c.text(margin, ny + k as u32 * line_h, s, line, MUTED);
-                }
+                ny -= c.line(30.0) + 10.0 * u;
+                c.text(margin, ny, Weight::Regular, 30.0, MUTED, "A USB phone is plugged in.");
             }
         }
         View::Qr => {
-            stack("BACK", Action::Back, &mut buttons);
+            stack("Back", Action::Back, &mut buttons);
             if let Some(qr) = m.qr {
                 let quiet = 3;
                 let modules = qr.width as u32 + 2 * quiet;
                 // leave room below for the steps and the status
-                let side = w.saturating_sub(2 * margin).min(bottom.saturating_sub(y + 10 * line_h));
-                let px = (side / modules).max(1);
-                let size = px * modules;
-                let x0 = (w - size) / 2;
-                c.rect(x0, y, size, size, WHITE);
+                let side = content_w.min(bottom - y - 330.0 * u).max(modules as f32);
+                let px = (side / modules as f32).floor().max(1.0);
+                let size = px * modules as f32;
+                let x0 = (w as f32 - size) / 2.0;
+                c.round_rect([x0, y, size, size], 28.0 * u, Some([255, 255, 255]), None);
                 for my in 0..qr.width {
                     for mx in 0..qr.width {
                         if qr.dark[my * qr.width + mx] {
-                            c.rect(x0 + (mx as u32 + quiet) * px, y + (my as u32 + quiet) * px, px, px, [0, 0, 0]);
+                            let (rx, ry) = (x0 + (mx as u32 + quiet) as f32 * px, y + (my as u32 + quiet) as f32 * px);
+                            for yy in ry as u32..(ry + px) as u32 {
+                                for xx in rx as u32..(rx + px) as u32 {
+                                    c.blend(xx as i64, yy as i64, [0, 0, 0], 1.0);
+                                }
+                            }
                         }
                     }
                 }
-                y += size + line_h;
+                y += size + 30.0 * u;
             } else {
-                c.text(margin, y, s, "COULD NOT MAKE A QR CODE", RED);
-                y += 2 * line_h;
+                c.text(margin, y, Weight::Semibold, 34.0, RED, "Could not make a QR code");
+                y += c.line(34.0) * 2.0;
             }
-            for line in wrap("PHONE: DEVELOPER OPTIONS, WIRELESS DEBUGGING, PAIR WITH QR CODE.", max_chars) {
-                c.text(margin, y, s, &line, MUTED);
-                y += line_h;
-            }
-            y += line_h / 2;
+            y = c.para(
+                margin,
+                y,
+                content_w,
+                Style(Weight::Regular, 30.0, MUTED),
+                "On the phone: Developer options, Wireless debugging, Pair device with QR code.",
+            ) + 14.0 * u;
             let (text, colour) = match m.note {
                 Some(n) => (n.to_string(), AMBER),
-                None => (format!("WAITING FOR THE PHONE TO SCAN{}", ".".repeat((m.tick % 4) as usize)), WHITE),
+                None => (format!("Waiting for the phone to scan{dots}"), TEXT),
             };
-            for line in wrap(&text, max_chars) {
-                c.text(margin, y, s, &line, colour);
-                y += line_h;
-            }
+            c.para(margin, y, content_w, Style(Weight::Semibold, 32.0, colour), &text);
         }
     }
 
     // read top to bottom, and indexed that way for hover
     buttons.sort_by_key(|b| b.rect[1]);
     for (i, b) in buttons.iter().enumerate() {
-        c.button(b.rect, s, &b.label, m.hover == Some(i));
+        c.button(b.rect, &b.label, m.hover == Some(i), matches!(b.action, Action::Back));
     }
     Screen { rgb: c.px, buttons }
 }
@@ -674,10 +832,24 @@ mod tests {
     }
 
     #[test]
-    fn wraps_on_spaces() {
-        assert_eq!(wrap("ONE TWO THREE", 7), vec!["ONE TWO", "THREE"]);
-        assert_eq!(wrap("TOOLONGWORD", 4), vec!["TOOLONGWORD"]);
-        assert!(wrap("", 10).is_empty());
+    fn wraps_to_a_pixel_width() {
+        let text = "Turn on USB debugging in Developer options";
+        let narrow = wrap(Weight::Regular, 32.0, 200.0, text);
+        assert!(narrow.len() > 1);
+        assert!(narrow.iter().all(|l| measure(Weight::Regular, 32.0, l) <= 200.0 || !l.contains(' ')));
+        assert_eq!(narrow.join(" "), text);
+        assert_eq!(wrap(Weight::Regular, 32.0, 10_000.0, text), vec![text]);
+        assert!(wrap(Weight::Regular, 32.0, 100.0, "").is_empty());
+        // bold text is wider than regular at the same size
+        assert!(measure(Weight::Semibold, 32.0, "Connect") > measure(Weight::Regular, 32.0, "Connect"));
+    }
+
+    #[test]
+    fn the_icon_and_fonts_load() {
+        let (w, h, rgba) = logo();
+        assert_eq!((*w, *h), (512, 512));
+        assert_eq!(rgba.len(), 512 * 512 * 4);
+        assert!(measure(Weight::Regular, 30.0, "Wi-Fi") > 30.0);
     }
 
     #[test]
@@ -725,7 +897,7 @@ mod tests {
         for m in [
             model(&looking, View::Home, &[], None, None, None),
             model(&looking, View::Wifi, &[], None, None, None),
-            model(&looking, View::Wifi, &nearby, Some("W82202003817"), None, Some("CONNECTING TO 192.168.0.20...")),
+            model(&looking, View::Wifi, &nearby, Some("W82202003817"), None, Some("Connecting to 192.168.0.20...")),
             model(&looking, View::Qr, &[], None, Some(&qr), None),
             model(&looking, View::Qr, &[], None, None, Some("PAIRING...")),
         ] {
@@ -761,7 +933,7 @@ mod tests {
             model(&unauth, View::Home, &[], None, None, None),
             model(&failed, View::Home, &[], None, None, None),
             model(&looking, View::Wifi, &[], None, None, None),
-            model(&looking, View::Wifi, &nearby, Some("W82202003817"), None, Some("CONNECTING TO 192.168.0.20...")),
+            model(&looking, View::Wifi, &nearby, Some("W82202003817"), None, Some("Connecting to 192.168.0.20...")),
             model(&looking, View::Qr, &[], None, Some(&qr), None),
         ];
         for (n, m) in screens.iter().enumerate() {

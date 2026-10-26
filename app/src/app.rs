@@ -295,7 +295,7 @@ impl App {
                         list.iter().find(|s| s.kind == crate::adb::ServiceKind::Pairing && s.name == qr.name)
                 {
                     wt.pairing = true;
-                    wt.note = Some("PAIRING...".into());
+                    wt.note = Some("Pairing...".into());
                     connect::pair_async(proxy.clone(), p.addr.clone(), qr.password.clone());
                 }
                 // adb usually connects to a paired phone by itself; if it has not after a few seconds, do it
@@ -314,12 +314,12 @@ impl App {
             }
             LandingEvent::Paired(Ok(ip)) => {
                 wt.paired_ip = Some((ip, Instant::now()));
-                wt.note = Some("PAIRED. CONNECTING...".into());
+                wt.note = Some("Paired. Connecting...".into());
             }
             LandingEvent::Paired(Err(e)) => {
                 // the phone's scan window has closed: show a fresh code to try again
                 wt.pairing = false;
-                wt.note = Some(format!("PAIRING FAILED: {}", brief(&e)));
+                wt.note = Some(format!("Pairing failed: {}", brief(&e)));
                 wt.qr = Qr::new().ok();
             }
             LandingEvent::Connected(Ok(serial)) => {
@@ -335,7 +335,7 @@ impl App {
             }
             LandingEvent::Typed(Some(addr)) => {
                 wt.busy = true;
-                wt.note = Some(format!("CONNECTING TO {}...", crate::adb::normalize_addr(&addr)));
+                wt.note = Some(format!("Connecting to {}...", crate::adb::normalize_addr(&addr)));
                 connect::connect_async(proxy, addr);
             }
             LandingEvent::Typed(None) => redraw = false,
@@ -371,13 +371,13 @@ impl App {
             }
             Action::Connect(addr) if !wt.busy => {
                 wt.busy = true;
-                wt.note = Some(format!("CONNECTING TO {addr}..."));
+                wt.note = Some(format!("Connecting to {addr}..."));
                 connect::connect_async(proxy, addr);
             }
             Action::TypeAddress if !wt.busy => connect::ask_address_async(proxy),
             Action::SwitchToWifi(usb) if !wt.busy => {
                 wt.busy = true;
-                wt.note = Some("SWITCHING TO WI-FI...".into());
+                wt.note = Some("Switching to Wi-Fi...".into());
                 connect::wifi_async(proxy, usb);
             }
             _ => {}

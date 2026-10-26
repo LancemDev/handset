@@ -9,6 +9,7 @@ repository = "https://github.com/davidamunga/handset"
 publish = false
 
 [dependencies]
+ab_glyph = "0.2"
 bytemuck = "1.25.2"
 cpal = "0.18.2"
 muda = "0.21.2"

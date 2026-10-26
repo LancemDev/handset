@@ -967,6 +967,7 @@ dependencies = [
 name = "handset"
 version = "0.1.2"
 dependencies = [
+ "ab_glyph",
  "bytemuck",
  "cpal",
  "muda",
