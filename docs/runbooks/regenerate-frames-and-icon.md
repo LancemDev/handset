@@ -28,11 +28,15 @@ The screen's aspect ratio should match the phone's; otherwise the video is lette
 
 ## App icon
 
-Needs Pillow and macOS (`iconutil`).
+The icon is drawn as two SVGs in `app/packaging/icon/`: `handset-icon.svg` (the full drawing, used at
+128 px and above) and `handset-icon-small.svg` (a simplified version for 64 px and below, with a bigger
+phone and no monitor stand). Edit the SVGs, then rasterise them.
+
+Needs `rsvg-convert` (`brew install librsvg`) and macOS (`iconutil`).
 
 ```sh
-python3 frames/make_icon.py
+scripts/make-icon.sh
 ```
 
-It reads the obsidian frame from `app/assets/` and writes `app/packaging/AppIcon.icns`. The output is
-deterministic, so re-running it on an unchanged frame produces an identical file.
+It writes `app/packaging/AppIcon.icns` and `app/packaging/icon/handset-icon-512.png` (used by the
+README). Check the small sizes by eye after changing the artwork. Commit the SVGs and both outputs.

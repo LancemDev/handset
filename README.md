@@ -1,3 +1,5 @@
+<p align="center"><img src="app/packaging/icon/handset-icon-512.png" alt="Handset icon" width="128"></p>
+
 # Handset
 
 [![ci](https://github.com/davidamunga/handset/actions/workflows/ci.yml/badge.svg)](https://github.com/davidamunga/handset/actions/workflows/ci.yml)

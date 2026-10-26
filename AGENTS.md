@@ -22,8 +22,9 @@ small native Rust app that implements the desktop side of the scrcpy protocol an
 | `app/src/audio.rs`, `capture.rs` | Raw PCM audio and playback; screenshots and ffmpeg recording |
 | `app/src/menu.rs`, `tools.rs` | Native macOS menu; tool lookup, error dialogs, default arguments |
 | `app/assets/` | Embedded scrcpy server and the built-in phone frames |
-| `frames/` | Scripts that generate the frame PNGs and the app icon |
-| `scripts/` | Packaging and hook scripts |
+| `frames/` | Script that generates the frame PNGs |
+| `app/packaging/` | App icon: SVG sources, `AppIcon.icns` and a README PNG (rebuild with `scripts/make-icon.sh`) |
+| `scripts/` | Packaging, icon and hook scripts |
 | `docs/adr/`, `docs/runbooks/` | Architecture decisions and repeatable procedures |
 
 ## Commands

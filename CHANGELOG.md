@@ -21,6 +21,6 @@ All notable changes to this project are documented here. The format is based on
 - Toolbar, native right-click menu, REC indicator and clickable "saved" toast
 - Recent captures menu and automatic clipboard copy (`--no-clipboard` to disable)
 - `--record-for` for hands-off recordings and `~/.config/handset/args` for default options
-- macOS app bundle packaging with a generated icon
+- macOS app bundle packaging with an app icon (monitor, Android robot and phone) rebuilt from SVG by `scripts/make-icon.sh`
 - Repository setup: license, contribution and security docs, commit linting, issue and pull request
   templates, CI, ADRs and runbooks
