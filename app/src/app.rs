@@ -501,6 +501,10 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, el: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Disconnected => el.exit(),
+            UserEvent::Failed(msg) => {
+                eprintln!("handset: {msg}");
+                el.exit();
+            }
             UserEvent::Menu(id) => self.on_menu(el, &id),
             UserEvent::Frame => {
                 let (Some(r), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) else { return };
