@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build dist/Handset.app (macOS). Run: scripts/package-macos.sh
 # UNIVERSAL=1 builds for Apple Silicon and Intel and joins them with lipo (needs both rust targets).
+# CODESIGN_IDENTITY="Developer ID Application: ..." (or a certificate hash) signs with the hardened
+# runtime and a timestamp, ready for notarisation. Without it the app is signed ad hoc.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,7 +42,13 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# ad-hoc signature: enough to run on this Mac (not for distribution)
-codesign --force --deep --sign - "$app"
+identity="${CODESIGN_IDENTITY:--}"
+if [ "$identity" = "-" ]; then
+  # ad-hoc signature: enough to run on this Mac (not for distribution)
+  codesign --force --deep --sign - "$app"
+else
+  codesign --force --options runtime --timestamp --sign "$identity" "$app"
+  codesign --verify --strict --verbose=2 "$app"
+fi
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 echo "built $app"

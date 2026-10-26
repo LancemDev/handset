@@ -28,8 +28,10 @@ refactors do not need one. While Handset is `0.x`, use `minor` for anything that
    them to that release: `Handset-X.Y.Z-macos.zip` (universal app bundle),
    `handset-X.Y.Z-macos.tar.gz` (the command line tool, with the licence and notice) and `SHA256SUMS`.
    While the version is `0.x` it also marks the release as a pre-release.
-5. Check the release page. The files are ad-hoc signed, not notarised, so Gatekeeper blocks a
-   downloaded copy until it is opened with right-click, Open (or `xattr -dr com.apple.quarantine`).
+5. Check the release page. With the signing secrets set (below) the app is Developer ID signed,
+   notarised and stapled, so it opens without a Gatekeeper warning. Without them the files are
+   ad-hoc signed and Gatekeeper blocks a downloaded copy until it is opened with right-click, Open
+   (or `xattr -dr com.apple.quarantine`).
 
 The first run after setup tags `v0.1.0`, the version already in `package.json`, without a version pull
 request.
@@ -40,6 +42,43 @@ request.
   Actions to create and approve pull requests**. Without it the workflow cannot open the version PR.
 - Tags created with the default `GITHUB_TOKEN` do not start other workflows, which is why the binary
   build is a job inside `release.yml` (using `needs` and the `published` output).
+
+## Signing and notarising
+
+`scripts/package-release.sh` signs with the hardened runtime when `CODESIGN_IDENTITY` is set, and
+notarises (and staples the app) when notary credentials are set too. Both the app and the command line
+tool are signed; one notarisation submission covers both. Without any of it the build is ad hoc.
+
+You need a paid Apple Developer account, a **Developer ID Application** certificate, and notarisation
+credentials. Keep all of it out of the repository.
+
+Locally:
+
+```sh
+# one-off: store notarisation credentials in the keychain (prompts for an app-specific password)
+xcrun notarytool store-credentials handset-notary --apple-id you@example.com --team-id TEAMID
+
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" NOTARY_PROFILE=handset-notary \
+  scripts/package-release.sh
+```
+
+If the keychain holds several certificates with the same name, pass the SHA-1 hash from
+`security find-identity -v -p codesigning` instead of the name.
+
+In CI, add these repository secrets (Settings > Secrets and variables > Actions). The build job reads
+them and falls back to an ad-hoc build when they are missing:
+
+| Secret | Content |
+|---|---|
+| `MACOS_CERT_P12` | The Developer ID Application certificate with its private key, exported from Keychain Access as `.p12`, base64 encoded (`base64 -i cert.p12 \| pbcopy`) |
+| `MACOS_CERT_PASSWORD` | The password chosen when exporting the `.p12` |
+| `MACOS_CODESIGN_IDENTITY` | The certificate name, `Developer ID Application: Your Name (TEAMID)` |
+| `NOTARY_KEY_P8` | An App Store Connect API key (`AuthKey_XXXX.p8`, base64 encoded) |
+| `NOTARY_KEY_ID` | That key's ID |
+| `NOTARY_ISSUER` | The issuer ID shown on the App Store Connect keys page |
+
+Check a finished release with `spctl -a -vv Handset.app` (expect `accepted`, `source=Notarized Developer ID`)
+and `xcrun stapler validate Handset.app`.
 
 ## Trying the build without releasing
 

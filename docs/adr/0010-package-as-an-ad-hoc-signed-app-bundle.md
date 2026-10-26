@@ -1,6 +1,6 @@
 # 0010. Package as an ad-hoc signed app bundle
 
-- Status: accepted
+- Status: accepted (signing for releases superseded by [0013](0013-sign-and-notarise-releases.md))
 - Date: 2026-10-26
 
 ## Context
