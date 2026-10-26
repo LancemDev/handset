@@ -33,3 +33,14 @@ pub fn die(msg: &str) -> ! {
     }
     std::process::exit(1)
 }
+
+/// Arguments to use when none were given: `~/.config/handset/args` if it
+/// exists, otherwise `--audio` when run as an app bundle.
+pub fn default_args() -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    if let Ok(text) = std::fs::read_to_string(home.join(".config/handset/args")) {
+        return text.split_whitespace().map(String::from).collect();
+    }
+    let in_bundle = std::env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS"));
+    if in_bundle { vec!["--audio".to_string()] } else { Vec::new() }
+}
