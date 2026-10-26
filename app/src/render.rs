@@ -589,7 +589,7 @@ impl Renderer {
         {
             let data = buf.slice(..).get_mapped_range().ok()?;
             for row in data.chunks_exact(bpr as usize).take(h as usize) {
-                for px in row[..(w * 4) as usize].chunks_exact(4) {
+                for px in row[..(w * 4) as usize].as_chunks::<4>().0 {
                     let (r, g, b, a) = if bgra { (px[2], px[1], px[0], px[3]) } else { (px[0], px[1], px[2], px[3]) };
                     // the surface is premultiplied; PNG / video want straight alpha
                     let un = |c: u8| {

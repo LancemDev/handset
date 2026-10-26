@@ -98,7 +98,7 @@ fn decode(png: &[u8], meta: &str) -> Result<Bezel, String> {
         rows_in_bucket += 1.0;
         let data = row.data();
         for (x, &(a, b)) in cols.iter().enumerate() {
-            for px in data[a * 4..b * 4].chunks_exact(4) {
+            for px in data[a * 4..b * 4].as_chunks::<4>().0 {
                 let al = px[3] as f32 / 255.0;
                 acc[x][0] += px[0] as f32 * al;
                 acc[x][1] += px[1] as f32 * al;

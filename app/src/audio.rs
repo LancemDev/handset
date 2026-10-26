@@ -97,7 +97,7 @@ fn push_samples(ring: &Ring, pcm: &[u8]) {
         q.clear();
         return;
     }
-    q.extend(pcm.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+    q.extend(pcm.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)));
     // never let playback fall behind: drop the oldest audio
     let excess = q.len().saturating_sub(MAX_BUFFER);
     if excess > 0 {

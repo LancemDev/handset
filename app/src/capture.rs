@@ -105,7 +105,7 @@ pub fn recent_captures(n: usize) -> Vec<PathBuf> {
             }
         }
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.into_iter().take(n).map(|f| f.1).collect()
 }
 
