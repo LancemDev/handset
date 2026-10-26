@@ -5,6 +5,7 @@
 
 mod adb;
 mod audio;
+mod capture;
 mod control;
 mod frame;
 mod overlay;

@@ -17,3 +17,4 @@ Copy [`0000-template.md`](0000-template.md) to start a new one.
 | [0005](0005-render-with-wgpu-in-a-transparent-window.md) | Render with wgpu in a transparent window | accepted |
 | [0006](0006-decode-h264-in-software-with-openh264.md) | Decode H.264 in software with openh264 | accepted |
 | [0007](0007-capture-raw-pcm-audio-and-play-it-with-cpal.md) | Capture raw PCM audio and play it with cpal | accepted |
+| [0008](0008-record-through-an-ffmpeg-sidecar.md) | Record through an ffmpeg sidecar | accepted |
