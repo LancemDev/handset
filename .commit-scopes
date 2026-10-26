@@ -1,0 +1,20 @@
+# Allowed commit scopes, one per line. Read by commitlint.config.js and .githooks/commit-msg.
+repo
+app
+adb
+server
+control
+frames
+ui
+render
+stream
+audio
+capture
+menu
+macos
+packaging
+ci
+deps
+deps-dev
+adr
+runbooks

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Conventional Commits check. Mirrors commitlint.config.js (same types, scopes and limits)
+# so contributors do not need Node. Install with scripts/install-hooks.sh.
+set -euo pipefail
+
+msg_file="$1"
+header="$(sed -n '1p' "$msg_file")"
+root="$(git rev-parse --show-toplevel)"
+types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+
+fail() {
+  echo "commit-msg: $1" >&2
+  echo "  expected: type(scope): subject   (types: ${types//|/, })" >&2
+  echo "  scopes:   see .commit-scopes" >&2
+  exit 1
+}
+
+# messages git writes itself
+case "$header" in
+  Merge\ * | Revert\ \"* | fixup\!\ * | squash\!\ *) exit 0 ;;
+esac
+
+re="^(${types})(\(([a-z0-9-]+)\))?(!)?: (.+)$"
+[[ "$header" =~ $re ]] || fail "header does not follow Conventional Commits: \"$header\""
+
+scope="${BASH_REMATCH[3]}"
+subject="${BASH_REMATCH[5]}"
+
+(( ${#header} <= 72 )) || fail "header is ${#header} characters, the limit is 72"
+[[ ! "$subject" =~ ^[A-Z] ]] || fail "subject must not start with a capital letter"
+[[ "$subject" != *. ]] || fail "subject must not end with a full stop"
+
+if [[ -n "$scope" ]]; then
+  grep -qxF "$scope" <(grep -v '^#' "$root/.commit-scopes") || fail "unknown scope \"$scope\""
+fi
+
+line_no=0
+while IFS= read -r line; do
+  line_no=$((line_no + 1))
+  [[ "$line" == \#* ]] && continue
+  (( ${#line} <= 100 )) || fail "line $line_no is longer than 100 characters"
+done < "$msg_file"
