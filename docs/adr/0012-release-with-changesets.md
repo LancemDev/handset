@@ -1,6 +1,6 @@
 # 0012. Release with Changesets
 
-- Status: accepted
+- Status: accepted (the release step is superseded by [0015](0015-release-only-when-asked.md))
 - Date: 2026-10-26
 
 ## Context

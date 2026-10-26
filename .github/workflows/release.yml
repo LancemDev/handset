@@ -1,14 +1,18 @@
 name: release
 
-# Keeps a "Version packages" pull request up to date from the changesets on main. Merging that pull
-# request bumps the version and CHANGELOG.md; the next run of this workflow tags the release (v0.1.0)
-# and creates the GitHub release. See docs/runbooks/release.md.
+# Publishes a release, only when you run it by hand: Actions > release > Run workflow, or
+# `gh workflow run release.yml`. It releases the version in package.json on main (the one a merged
+# "Version packages" pull request set), after checking that it has not been released yet and that
+# CHANGELOG.md has a section for it. With "dry run" it builds, signs and notarises the files and keeps
+# them as an artifact, and tags, publishes and changes nothing else. See docs/runbooks/release.md.
 
 on:
-  push:
-    branches: [main]
-  # Dry run: builds the release files and keeps them as a workflow artifact, publishes nothing.
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build the files and keep them as an artifact; do not tag, publish or update the cask
+        type: boolean
+        default: false
 
 concurrency:
   group: release
@@ -16,43 +20,40 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  release:
-    name: version or tag
-    if: github.event_name == 'push'
+  prepare:
+    name: check the version
     runs-on: ubuntu-24.04
     outputs:
-      published: ${{ steps.changesets.outputs.published }}
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - id: changesets
-        uses: changesets/action@v1
-        with:
-          version: npm run version
-          publish: npm run tag
-          commit: "chore(release): version packages"
-          title: "chore(release): version packages"
+      - id: check
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$DRY_RUN" != "true" ]; then
+            [ "$GITHUB_REF" = "refs/heads/main" ] || { echo "::error::Run the release from main"; exit 1; }
+            if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+              echo "::error::v$version is already released. Merge a version pull request first."; exit 1
+            fi
+            grep -q "^## $version\$" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          fi
+          if ls .changeset/*.md 2>/dev/null | grep -qv README.md; then
+            echo "::warning::Changesets are pending: they are not part of v$version."
+          fi
 
   build:
-    name: build and attach binaries (macOS)
-    needs: release
+    name: build the files (macOS)
+    needs: prepare
     outputs:
       version: ${{ steps.release-files.outputs.version }}
       sha256: ${{ steps.release-files.outputs.sha256 }}
-    # Tags made with the default token do not start other workflows, so the binaries are built here,
-    # in the same run that tagged the release.
-    if: ${{ !cancelled() && (needs.release.outputs.published == 'true' || github.event_name == 'workflow_dispatch') }}
     runs-on: macos-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -101,24 +102,36 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/AuthKey.p8"
-      - name: Attach to the GitHub release
-        if: github.event_name == 'push'
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          gh release upload "v$version" dist/release/* --clobber
-          # 0.x releases are pre-releases
-          case "$version" in 0.*) gh release edit "v$version" --prerelease --latest=false ;; esac
-      - name: Keep the files as an artifact (dry run)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Keep the files for the next job
         uses: actions/upload-artifact@v7
         with:
-          name: handset-release-files
+          name: release-files
           path: dist/release/*
+
+  publish:
+    name: tag and publish
+    needs: [prepare, build]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-files
+          path: release-files
+      - name: Create the tag and the GitHub release
+        run: |
+          awk -v v="$VERSION" '$0 == "## " v { found = 1; next } /^## / { found = 0 } found' CHANGELOG.md > notes.md
+          gh release create "v$VERSION" release-files/* \
+            --target "$GITHUB_SHA" --title "v$VERSION" --notes-file notes.md --latest
 
   homebrew:
     name: update the Homebrew cask
-    needs: [release, build]
-    if: ${{ needs.release.outputs.published == 'true' }}
+    needs: [prepare, build, publish]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-24.04
     env:
       TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}

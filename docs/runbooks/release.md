@@ -18,30 +18,39 @@ refactors do not need one. While Handset is `0.x`, use `minor` for anything that
 
 ## Cutting a release
 
-1. Pushes to `main` run the `release` workflow. While changesets are pending it opens or updates a pull
+A release happens only when you start it. Merging a version pull request does not release anything.
+
+1. Pushes to `main` run the `version` workflow. While changesets are pending it opens or updates a pull
    request titled `chore(release): version packages`. It bumps `package.json`, `app/Cargo.toml` and
    `app/Cargo.lock` and writes the new section of `CHANGELOG.md`.
-2. Read that pull request. Edit `CHANGELOG.md` there if a summary needs rewording, then merge it.
-3. The workflow runs again on the merge, finds no changesets left, tags the new version `vX.Y.Z` and
-   creates a GitHub release with the changelog section as its notes.
-4. In the same run a macOS job builds the release files with `scripts/package-release.sh` and attaches
-   them to that release: `Handset-X.Y.Z-macos.zip` (universal app bundle),
-   `handset-X.Y.Z-macos.tar.gz` (the command line tool, with the licence and notice) and `SHA256SUMS`.
-   While the version is `0.x` it also marks the release as a pre-release.
+2. Read that pull request. Edit `CHANGELOG.md` there if a summary needs rewording, then merge it. Nothing
+   is published yet; `main` just carries the new version.
+3. When you want to ship it, run the `release` workflow from `main`: Actions > release > Run workflow, or
+
+   ```sh
+   gh workflow run release.yml
+   ```
+
+4. The workflow first checks that `v<version>` does not exist yet and that `CHANGELOG.md` has a section
+   for it, then builds the release files on macOS with `scripts/package-release.sh`
+   (`Handset-X.Y.Z-macos.zip`, the universal app bundle; `handset-X.Y.Z-macos.tar.gz`, the command line
+   tool with the licence and notice; and `SHA256SUMS`). It then tags `vX.Y.Z`, creates a normal GitHub
+   release with the changelog section as its notes and the files attached, and bumps the Homebrew cask.
 5. Check the release page. With the signing secrets set (below) the app is Developer ID signed,
    notarised and stapled, so it opens without a Gatekeeper warning. Without them the files are
    ad-hoc signed and Gatekeeper blocks a downloaded copy until it is opened with right-click, Open
    (or `xattr -dr com.apple.quarantine`).
 
-The first run after setup tags `v0.1.0`, the version already in `package.json`, without a version pull
-request.
+Releases are normal releases, not pre-releases. To rehearse one first, tick **dry run** (or
+`gh workflow run release.yml -f dry_run=true`): it builds, signs and notarises the files and keeps them as the
+`release-files` artifact, and tags, publishes and changes nothing else.
 
 ## One-time repository settings
 
 - Settings > Actions > General > Workflow permissions: **Read and write**, and tick **Allow GitHub
   Actions to create and approve pull requests**. Without it the workflow cannot open the version PR.
-- Tags created with the default `GITHUB_TOKEN` do not start other workflows, which is why the binary
-  build is a job inside `release.yml` (using `needs` and the `published` output).
+- Tags created with the default `GITHUB_TOKEN` do not start other workflows. The release workflow does not
+  depend on that: it builds and publishes in one run that you start by hand.
 
 ## Signing and notarising
 
@@ -92,16 +101,18 @@ Without the secret the job prints a notice and does nothing, and the cask has to
 Check a finished release with `spctl -a -vv Handset.app` (expect `accepted`, `source=Notarized Developer ID`)
 and `xcrun stapler validate Handset.app`.
 
-## Trying the build without releasing
+## Building the files locally
 
-Run the `release` workflow by hand (Actions > release > Run workflow, or `gh workflow run release.yml`).
-It builds the same files and keeps them as the `handset-release-files` artifact, and publishes nothing.
-Locally, `scripts/package-release.sh` writes them to `dist/release/` (needs both Rust targets,
+`scripts/package-release.sh` writes the same files to `dist/release/` (needs both Rust targets,
 `rustup target add aarch64-apple-darwin x86_64-apple-darwin`).
 
 ## If something goes wrong
 
-- *The version pull request is stale:* push anything to `main`; the workflow rebuilds it.
+- *The version pull request is stale:* push anything to `main`; the `version` workflow rebuilds it.
+- *The release stops with "already released":* the version in `package.json` already has a tag. Merge a version
+  pull request (it needs a changeset) to move to the next one.
+- *A release is wrong after publishing:* edit or delete the GitHub release and the `vX.Y.Z` tag by hand, fix
+  the problem, and run the workflow again.
 - *Wrong bump:* edit the changeset file in the version pull request's base (or add a new changeset with
   the bigger bump) and let the pull request regenerate.
 - *Versions disagree:* run `npm run version` locally with no changesets pending: it only re-syncs
