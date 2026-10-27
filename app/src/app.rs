@@ -166,7 +166,7 @@ pub struct App {
     styling: Vec<std::thread::JoinHandle<()>>,
     auto_stop_at: Option<Instant>,
     hover: Option<Button>,
-    toolbar_key: Option<(u32, Option<Button>, bool)>,
+    toolbar_key: Option<(u32, Option<Button>, bool, bool)>,
     toast: Option<Toast>,
     /// What the renderer's overlay currently shows (text, dot colour).
     overlay_key: Option<(String, Option<[u8; 3]>)>,
@@ -507,7 +507,7 @@ impl App {
     /// Stop mirroring and return the frame to its idle state. Returns the serial that was mirrored.
     fn end_session(&mut self) -> Option<String> {
         let mirror = self.mirror.take()?;
-        let serial = mirror.session.serial().to_string();
+        let serial = mirror.serial().to_string();
         self.stop_recording();
         drop(mirror); // kills the server and removes the adb forward
         self.control = Control::disconnected();
@@ -538,6 +538,13 @@ impl App {
     fn on_disconnected(&mut self, el: &ActiveEventLoop) {
         // the stream of a session ended on purpose (Phone menu) reports its end late: the connect screen is up
         if self.mirror.is_none() && self.waiting.is_some() && self.auto_record.is_none() {
+            return;
+        }
+        // an iOS device has no connect screen to return to yet: finish any recording and quit
+        if self.is_ios() {
+            eprintln!("the iOS device was disconnected");
+            self.end_session();
+            el.exit();
             return;
         }
         if self.mirror.is_none() || self.auto_record.is_some() {
@@ -622,14 +629,14 @@ impl App {
             Ok((mirror, control)) => {
                 self.with_audio = mirror.with_audio();
                 self.control = control;
-                self.list_apps(mirror.session.serial().to_string());
+                self.list_apps(mirror.serial().to_string());
                 if let Some(name) = self.start_app.take() {
                     let _ = self.control.start_app(&name);
                 }
                 if let Some(w) = &self.window {
-                    w.set_title(&mirror.session.device_name);
+                    w.set_title(mirror.device_name());
                 }
-                self.title = mirror.session.device_name.clone();
+                self.title = mirror.device_name().to_string();
                 self.mirror = Some(mirror);
                 self.black = Default::default();
                 self.hint = None;
@@ -666,18 +673,28 @@ impl App {
 
     /// Re-rasterize the toolbar when its size, hover or recording state changed.
     fn refresh_toolbar(&mut self) {
+        let ios = self.is_ios();
         let (Some(r), Some(w)) = (self.renderer.as_mut(), self.window.as_ref()) else { return };
         if !r.toolbar_visible() {
             self.toolbar_key = None;
             return;
         }
         let wh = w.inner_size().height;
-        let key = (wh, self.hover, self.recorder.is_some());
+        let key = (wh, self.hover, self.recorder.is_some(), ios);
         if self.toolbar_key != Some(key) {
-            r.set_toolbar_image(Some(&toolbar::raster(wh as f32, self.hover, self.recorder.is_some())));
+            let order = toolbar::order(ios);
+            r.set_toolbar_image(
+                Some(&toolbar::raster(wh as f32, order, self.hover, self.recorder.is_some())),
+                order.len(),
+            );
             self.toolbar_key = Some(key);
             w.request_redraw();
         }
+    }
+
+    /// Mirroring an iOS device: view only, and its own frames.
+    fn is_ios(&self) -> bool {
+        self.mirror.as_ref().is_some_and(|m| m.is_ios())
     }
 
     fn toolbar_button(&self) -> Option<Button> {
@@ -686,7 +703,8 @@ impl App {
             return None;
         }
         let s = w.inner_size();
-        toolbar::button_at(s.width as f32, s.height as f32, self.cursor.0 as f32, self.cursor.1 as f32)
+        let order = toolbar::order(self.is_ios());
+        toolbar::button_at(s.width as f32, s.height as f32, self.cursor.0 as f32, self.cursor.1 as f32, order)
     }
 
     fn on_button(&mut self, el: &ActiveEventLoop, b: Button) {
@@ -727,8 +745,8 @@ impl App {
             Button::More => self.show_menu(),
             Button::Quit => el.exit(),
             Button::NextFrame => {
-                // None -> each built-in frame -> back to None
-                let names: Vec<&str> = frame::builtin_names().collect();
+                // None -> each built-in frame (only the iOS ones for an iOS device) -> back to None
+                let names = frame::names_for(self.is_ios());
                 let next = match self.frame_spec.as_deref().and_then(|s| names.iter().position(|n| *n == s)) {
                     None if self.frame_spec.is_none() => names.first().map(|n| n.to_string()),
                     None => names.first().map(|n| n.to_string()), // a custom frame: restart the cycle
@@ -747,10 +765,13 @@ impl App {
 
     fn show_menu(&mut self) {
         let Some(w) = self.window.clone() else { return };
+        let ios = self.is_ios();
+        let frames = frame::names_for(ios);
         let builtin = |s: &str| frame::builtin_names().any(|n| n == s);
         let state = menu::State {
-            frames: frame::builtin_names().collect(),
-            frame: self.frame_spec.clone().filter(|s| builtin(s)),
+            ios,
+            frame: self.frame_spec.clone().filter(|s| frames.contains(&s.as_str())),
+            frames,
             custom_frame: self.frame_spec.as_deref().is_some_and(|s| !builtin(s)),
             recording: self.recorder.is_some(),
             gif: self.cap.format == capture::Format::Gif,
@@ -766,7 +787,7 @@ impl App {
             clipboard: self.cap.clipboard,
             auto_style: self.cap.auto_style,
             mirroring: self.mirror.is_some(),
-            usb: self.mirror.as_ref().is_some_and(|m| !connect::is_wireless(m.session.serial())),
+            usb: self.mirror.as_ref().is_some_and(|m| !connect::is_wireless(m.serial())),
             sync: self.sync.lock().unwrap().enabled,
             apps: self.apps.clone(),
             apps_loading: self.apps_loading,
@@ -794,7 +815,8 @@ impl App {
             b.rgba = Vec::new(); // already on the GPU
             b
         });
-        settings::save("frame", self.frame_spec_name(&spec));
+        // an iOS device keeps its own frame, so going back to Android finds the phone's frame
+        settings::save(if self.is_ios() { "frame-ios" } else { "frame" }, self.frame_spec_name(&spec));
         self.frame_spec = spec;
         // keep the height, follow the new aspect ratio
         let height = w.inner_size().height;
@@ -1122,10 +1144,14 @@ impl App {
 
     /// Install a dropped APK or copy another file to the phone's Downloads.
     fn drop_file(&mut self, path: std::path::PathBuf) {
-        let Some(serial) = self.mirror.as_ref().map(|m| m.session.serial().to_string()) else {
+        let Some(serial) = self.mirror.as_ref().map(|m| m.serial().to_string()) else {
             self.show_toast("CONNECT A PHONE FIRST");
             return;
         };
+        if self.is_ios() {
+            self.show_toast("NOT AVAILABLE ON IOS YET");
+            return;
+        }
         let verb = if transfer::kind(&path) == transfer::Kind::Install { "INSTALLING" } else { "COPYING" };
         self.show_toast(&format!("{verb} {}...", transfer::name(&path).to_uppercase()));
         if let Some(t) = self.toast.as_mut() {
@@ -1467,7 +1493,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.home_height = window.inner_size().height;
         self.window = Some(window);
-        if let Some(serial) = self.mirror.as_ref().map(|m| m.session.serial().to_string()) {
+        if let Some(serial) = self.mirror.as_ref().filter(|m| !m.is_ios()).map(|m| m.serial().to_string()) {
             self.list_apps(serial);
             if let Some(name) = self.start_app.take() {
                 let _ = self.control.start_app(&name);

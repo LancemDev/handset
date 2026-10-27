@@ -17,6 +17,8 @@ mod doctor;
 mod editor;
 mod frame;
 mod install;
+#[cfg(target_os = "macos")]
+mod ios;
 mod menu;
 mod mirror;
 mod overlay;
@@ -85,6 +87,8 @@ fn main() {
     let mut connect: Option<String> = None;
     let mut wifi = false;
     let mut last = false;
+    let mut ios = false;
+    let mut frame_given = false;
     let mut update_check = saved.get_bool("update-check").unwrap_or(true);
     let mut touches = saved.get_bool("touches").unwrap_or(false);
     let mut sync_clipboard = saved.get_bool("sync-clipboard").unwrap_or(true);
@@ -97,6 +101,7 @@ fn main() {
             "--frame" => {
                 let v = args.next().unwrap_or_else(|| usage());
                 frame_spec = (v != "none").then_some(v);
+                frame_given = true;
             }
             "--max-size" => opts.max_size = args.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| usage()),
             "--record-format" => {
@@ -112,6 +117,7 @@ fn main() {
             "--edit" => edit = Some(args.next().unwrap_or_default()),
             "--restyle" => restyle = Some(args.next().unwrap_or_else(|| usage())),
             "--audio" => opts.audio = true,
+            "--ios" => ios = true,
             "--gain" => cap.gain_db = args.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| usage()),
             "--no-normalize" => cap.normalize = false,
             "--no-clipboard" => cap.clipboard = false,
@@ -174,6 +180,17 @@ fn main() {
         }
     }
 
+    // an iOS device has its own saved frame, and only Apple-shaped built-in ones (a custom PNG is kept)
+    if ios && !frame_given {
+        frame_spec = match saved.get("frame-ios") {
+            Some("none") => None,
+            Some(spec) => Some(spec.to_string()),
+            None => Some(frame::IOS_DEFAULT.to_string()),
+        };
+    }
+    if ios && frame_spec.as_deref().is_some_and(|s| frame::builtin_names().any(|n| n == s) && !frame::is_ios(s)) {
+        frame_spec = Some(frame::IOS_DEFAULT.to_string());
+    }
     let bezel = frame_spec
         .as_deref()
         .map(|s| frame::load(s).unwrap_or_else(|e| tools::die(&format!("Cannot load the frame: {e}"))));
@@ -195,7 +212,25 @@ fn main() {
         };
         connect = Some(r.addr.clone());
     }
-    let ready: Option<String> = if let Some(addr) = &connect {
+    #[cfg(target_os = "macos")]
+    let ios_mirror = ios.then(|| {
+        let found = ios::devices(std::time::Duration::from_secs(4));
+        let device = match &serial {
+            Some(want) => found.iter().find(|d| d.uid == *want || d.name == *want),
+            None => found.first(),
+        }
+        .unwrap_or_else(|| {
+            tools::die("No iPhone or iPad found. Connect it with a cable, unlock it and tap Trust if it asks.")
+        });
+        mirror::Mirror::start_ios(device, opts.audio, mute, event_loop.create_proxy(), slot.clone(), audio_sink.clone())
+            .unwrap_or_else(|e| tools::die(&e))
+    });
+    #[cfg(not(target_os = "macos"))]
+    let ios_mirror: Option<mirror::Mirror> = ios.then(|| tools::die("Mirroring an iPhone or iPad needs macOS."));
+
+    let ready: Option<String> = if ios_mirror.is_some() {
+        None
+    } else if let Some(addr) = &connect {
         Some(adb::connect(addr).unwrap_or_else(|e| tools::die(&e.to_string())))
     } else {
         adb::devices().ok().and_then(|d| match &serial {
@@ -224,9 +259,14 @@ fn main() {
             sync.clone(),
         )
         .unwrap_or_else(|e| tools::die(&e));
-        title = m.session.device_name.clone();
+        title = m.device_name().to_string();
         with_audio = m.with_audio();
         control = c;
+        mirror = Some(m);
+    }
+    if let Some(m) = ios_mirror {
+        title = m.device_name().to_string();
+        with_audio = m.with_audio();
         mirror = Some(m);
     }
     let waiting = mirror.is_none();
