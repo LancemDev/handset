@@ -1788,8 +1788,10 @@ impl App {
     /// Start resizing by dragging (the platform's own drag-resize is not available on macOS).
     fn begin_resize(&mut self, d: winit::window::ResizeDirection) {
         use winit::window::ResizeDirection::*;
+        self.resize_local = None;
         let Some(w) = &self.window else { return };
-        // Wayland never tells a window where it is: size it by how far the pointer moves and leave it in place
+        // Wayland never tells a window where it is: size it by how far the pointer moves and leave it in place.
+        // The top-left stays put, so dragging a west or north corner outward grows the window away from the pointer.
         let Ok(p) = w.outer_position() else {
             let s = w.inner_size();
             self.resize_local = Some((self.cursor, (s.width as f64, s.height as f64)));
