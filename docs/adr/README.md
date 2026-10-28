@@ -45,3 +45,4 @@ Copy [`0000-template.md`](0000-template.md) to start a new one.
 | [0033](0033-release-linux-tarballs-signed-like-the-other-files.md) | Release Linux tarballs, signed like the other files | accepted |
 | [0034](0034-type-addresses-and-pairing-codes-in-the-window.md) | Type addresses and pairing codes in the window | accepted |
 | [0035](0035-draw-the-menu-ourselves-on-linux.md) | Draw the right-click menu ourselves on Linux | accepted |
+| [0036](0036-update-linux-installs-by-how-they-were-made.md) | Update Linux installs by how they were made, and swap only the program of an unpacked tarball | accepted |
