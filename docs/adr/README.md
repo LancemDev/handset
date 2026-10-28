@@ -43,3 +43,4 @@ Copy [`0000-template.md`](0000-template.md) to start a new one.
 | [0031](0031-package-linux-as-a-tarball-before-a-release-file.md) | Package Linux as a tarball in CI before it becomes a release file | accepted |
 | [0032](0032-support-older-glibc-musl-and-nix-and-leave-out-flatpak-and-snap.md) | Support older glibc, musl and Nix; leave out Flatpak and Snap for now | accepted |
 | [0033](0033-release-linux-tarballs-signed-like-the-other-files.md) | Release Linux tarballs, signed like the other files | accepted |
+| [0034](0034-type-addresses-and-pairing-codes-in-the-window.md) | Type addresses and pairing codes in the window | accepted |
